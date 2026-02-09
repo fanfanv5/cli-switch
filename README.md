@@ -1,6 +1,9 @@
 <div align="center">
 
-# All-in-One Assistant for Claude Code, Codex & Gemini CLI
+# All-in-One Assistant for Claude Code, Codex & Gemini CLI 
+# Fork from https://github.com/farion1231/cc-switch
+# app name is cli-switch , modded from cc-switch
+# cc-switch魔改
 
 [![Version](https://img.shields.io/badge/version-3.10.2-blue.svg)](https://github.com/farion1231/cc-switch/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](https://github.com/farion1231/cc-switch/releases)
