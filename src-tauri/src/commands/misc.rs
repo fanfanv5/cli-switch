@@ -89,15 +89,17 @@ pub struct ToolVersion {
 
 #[tauri::command]
 pub async fn get_tool_versions() -> Result<Vec<ToolVersion>, String> {
-    let tools = vec!["claude", "codex", "gemini", "opencode"];
+    let tools = vec!["nodejs", "claude", "codex", "gemini", "opencode"];
     let mut results = Vec::new();
 
     // 使用全局 HTTP 客户端（已包含代理配置）
     let client = crate::proxy::http_client::get();
 
     for tool in tools {
-        // 1. 获取本地版本 - 先尝试直接执行，失败则扫描常见路径
-        let (local_version, local_error) = if let Some(distro) = wsl_distro_for_tool(tool) {
+        // 1. 获取本地版本
+        let (local_version, local_error) = if tool == "nodejs" {
+            try_get_nodejs_version()
+        } else if let Some(distro) = wsl_distro_for_tool(tool) {
             try_get_version_wsl(tool, &distro)
         } else {
             // 先尝试直接执行
@@ -113,10 +115,11 @@ pub async fn get_tool_versions() -> Result<Vec<ToolVersion>, String> {
 
         // 2. 获取远程最新版本
         let latest_version = match tool {
+            "nodejs" => fetch_npm_latest_version(&client, "node").await,
             "claude" => fetch_npm_latest_version(&client, "@anthropic-ai/claude-code").await,
             "codex" => fetch_npm_latest_version(&client, "@openai/codex").await,
             "gemini" => fetch_npm_latest_version(&client, "@google/gemini-cli").await,
-            "opencode" => fetch_github_latest_version(&client, "anomalyco/opencode").await,
+            "opencode" => fetch_npm_latest_version(&client, "opencode-ai").await,
             _ => None,
         };
 
@@ -186,23 +189,28 @@ fn extract_version(raw: &str) -> String {
 
 /// 尝试直接执行命令获取版本
 fn try_get_version(tool: &str) -> (Option<String>, Option<String>) {
+    try_get_version_with_command(tool, &format!("{tool} --version"))
+}
+
+/// 获取 Node.js 版本（使用 --version 参数）
+fn try_get_nodejs_version() -> (Option<String>, Option<String>) {
+    try_get_version_with_command("node", "node --version")
+}
+
+/// 通用版本检测函数
+fn try_get_version_with_command(_tool: &str, cmd: &str) -> (Option<String>, Option<String>) {
     use std::process::Command;
 
     #[cfg(target_os = "windows")]
     let output = {
         Command::new("cmd")
-            .args(["/C", &format!("{tool} --version")])
+            .args(["/C", cmd])
             .creation_flags(CREATE_NO_WINDOW)
             .output()
     };
 
     #[cfg(not(target_os = "windows"))]
-    let output = {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("{tool} --version"))
-            .output()
-    };
+    let output = { Command::new("sh").arg("-c").arg(cmd).output() };
 
     match output {
         Ok(out) => {
@@ -324,7 +332,6 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
         home.join(".local/bin"), // Native install (official recommended)
         home.join(".npm-global/bin"),
         home.join("n/bin"), // n version manager
-        home.join(".volta/bin"), // Volta package manager
     ];
 
     #[cfg(target_os = "macos")]
@@ -476,6 +483,161 @@ fn wsl_distro_from_path(_path: &Path) -> Option<String> {
     None
 }
 
+// ============================================================
+// CLI 工具安装/升级
+// ============================================================
+
+/// CLI 工具安装/升级操作类型
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum CliToolAction {
+    Install,
+    Upgrade,
+}
+
+/// CLI 工具安装/升级结果
+#[derive(serde::Serialize)]
+pub struct CliToolInstallResult {
+    success: bool,
+    tool: String,
+    action: CliToolAction,
+    message: String,
+    output: String,
+    error: Option<String>,
+}
+
+/// 获取工具对应的 npm 包名
+fn get_npm_package_for_tool(tool: &str) -> Option<&'static str> {
+    match tool {
+        "claude" => Some("@anthropic-ai/claude-code"),
+        "codex" => Some("@openai/codex"),
+        "gemini" => Some("@google/gemini-cli"),
+        "opencode" => Some("opencode-ai"),
+        _ => None,
+    }
+}
+
+/// 安装或升级 CLI 工具
+#[tauri::command]
+pub async fn install_cli_tool(
+    tool: String,
+    action: CliToolAction,
+) -> Result<CliToolInstallResult, String> {
+    log::info!("[CLI安装] 收到请求: tool={}, action={:?}", tool, action);
+
+    // 验证工具名称
+    if !["claude", "codex", "gemini", "opencode"].contains(&tool.as_str()) {
+        log::error!("[CLI安装] 不支持的工具: {}", tool);
+        return Ok(CliToolInstallResult {
+            success: false,
+            tool: tool.clone(),
+            action: action.clone(),
+            message: format!("不支持的工具: {tool}"),
+            output: String::new(),
+            error: Some("Unsupported tool".to_string()),
+        });
+    }
+
+    let package =
+        get_npm_package_for_tool(&tool).ok_or_else(|| format!("工具 {tool} 不支持 npm 安装"))?;
+    log::info!("[CLI安装] npm包名: {}", package);
+
+    // 跨平台执行命令
+    let output = {
+        #[cfg(target_os = "windows")]
+        {
+            // Windows 上使用 npm.cmd，添加 --force 绕过缓存问题
+            let args = if matches!(action, CliToolAction::Upgrade) {
+                vec![package.to_string() + "@latest"]
+            } else {
+                vec![package.to_string()]
+            };
+            log::info!("[CLI安装] 执行命令: npm.cmd install -g --force {}", args[0]);
+            std::process::Command::new("npm.cmd")
+                .arg("install")
+                .arg("-g")
+                .arg("--force")
+                .args(&args)
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&cmd_str)
+                .output()
+        }
+    };
+
+    let output = match output {
+        Ok(out) => {
+            log::info!(
+                "[CLI安装] 命令执行完成, exit code: {}",
+                out.status.code().unwrap_or(-1)
+            );
+            out
+        }
+        Err(e) => {
+            log::error!("[CLI安装] 命令执行失败: {}", e);
+            return Err(format!("执行 npm 命令失败: {e}"));
+        }
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    log::info!("[CLI安装] stdout: {}", stdout);
+    if !stderr.is_empty() {
+        log::warn!("[CLI安装] stderr: {}", stderr);
+    }
+
+    if output.status.success() {
+        // 验证安装结果
+        let (version, _) = try_get_version(&tool);
+        let version_msg = version
+            .as_ref()
+            .map(|v| format!("当前版本: {v}"))
+            .unwrap_or_else(|| "版本检测失败，请手动验证".to_string());
+
+        Ok(CliToolInstallResult {
+            success: true,
+            tool: tool.clone(),
+            action: action.clone(),
+            message: format!(
+                "{}成功，{version_msg}",
+                match action {
+                    CliToolAction::Install => "安装",
+                    CliToolAction::Upgrade => "升级",
+                }
+            ),
+            output: stdout.clone(),
+            error: None,
+        })
+    } else {
+        let error_msg = if stderr.is_empty() {
+            stdout.clone()
+        } else {
+            stderr
+        };
+        Ok(CliToolInstallResult {
+            success: false,
+            tool: tool.clone(),
+            action: action.clone(),
+            message: format!(
+                "{}失败",
+                match action {
+                    CliToolAction::Install => "安装",
+                    CliToolAction::Upgrade => "升级",
+                }
+            ),
+            output: stdout,
+            error: Some(error_msg),
+        })
+    }
+}
+
 /// 打开指定提供商的终端
 ///
 /// 根据提供商配置的环境变量启动一个带有该提供商特定设置的终端
@@ -486,6 +648,7 @@ pub async fn open_provider_terminal(
     state: State<'_, crate::store::AppState>,
     app: String,
     #[allow(non_snake_case)] providerId: String,
+    #[allow(non_snake_case)] workingDirectory: Option<String>,
 ) -> Result<bool, String> {
     let app_type = AppType::from_str(&app).map_err(|e| e.to_string())?;
 
@@ -501,14 +664,21 @@ pub async fn open_provider_terminal(
     let config = &provider.settings_config;
     let env_vars = extract_env_vars_from_config(config, &app_type);
 
+    // 解析工作目录路径
+    let working_dir = workingDirectory
+        .as_ref()
+        .map(|p| std::path::Path::new(p))
+        .filter(|p| p.is_absolute());
+
     // 根据平台启动终端，传入提供商ID用于生成唯一的配置文件名
-    launch_terminal_with_env(env_vars, &providerId).map_err(|e| format!("启动终端失败: {e}"))?;
+    launch_terminal_with_env(env_vars, &providerId, working_dir, &app_type)
+        .map_err(|e| format!("启动终端失败: {e}"))?;
 
     Ok(true)
 }
 
 /// 从提供商配置中提取环境变量
-fn extract_env_vars_from_config(
+pub fn extract_env_vars_from_config(
     config: &serde_json::Value,
     app_type: &AppType,
 ) -> Vec<(String, String)> {
@@ -557,37 +727,63 @@ fn extract_env_vars_from_config(
     env_vars
 }
 
-/// 创建临时配置文件并启动 claude 终端
-/// 使用 --settings 参数传入提供商特定的 API 配置
-fn launch_terminal_with_env(
+/// 获取 CLI 命令名称
+fn get_cli_command(app_type: &AppType) -> &str {
+    match app_type {
+        AppType::Claude => "claude",
+        AppType::Codex => "codex",
+        AppType::Gemini => "gemini",
+        AppType::OpenCode => "opencode",
+    }
+}
+
+/// 创建临时配置文件并启动对应 CLI 的终端
+/// 只有 Claude 需要 --settings 参数传入配置文件，其他 CLI 直接启动
+pub fn launch_terminal_with_env(
     env_vars: Vec<(String, String)>,
     provider_id: &str,
+    working_dir: Option<&std::path::Path>,
+    app_type: &AppType,
 ) -> Result<(), String> {
     let temp_dir = std::env::temp_dir();
-    let config_file = temp_dir.join(format!(
-        "claude_{}_{}.json",
-        provider_id,
-        std::process::id()
-    ));
+    let cli_command = get_cli_command(app_type);
 
-    // 创建并写入配置文件
-    write_claude_config(&config_file, &env_vars)?;
+    // 只有 Claude 需要配置文件，其他 CLI 直接通过环境变量启动
+    let config_file = if *app_type == AppType::Claude {
+        let file = temp_dir.join(format!(
+            "claude_{}_{}.json",
+            provider_id,
+            std::process::id()
+        ));
+        // 创建并写入 Claude 配置文件
+        write_claude_config(&file, &env_vars)?;
+        Some(file)
+    } else {
+        None
+    };
 
     #[cfg(target_os = "macos")]
     {
-        launch_macos_terminal(&config_file)?;
+        launch_macos_terminal(cli_command, &config_file, working_dir, app_type)?;
         Ok(())
     }
 
     #[cfg(target_os = "linux")]
     {
-        launch_linux_terminal(&config_file)?;
+        launch_linux_terminal(cli_command, &config_file, working_dir, app_type)?;
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
-        launch_windows_terminal(&temp_dir, &config_file)?;
+        launch_windows_terminal(
+            cli_command,
+            &config_file,
+            &temp_dir,
+            provider_id,
+            working_dir,
+            app_type,
+        )?;
         return Ok(());
     }
 
@@ -617,7 +813,12 @@ fn write_claude_config(
 
 /// macOS: 根据用户首选终端启动
 #[cfg(target_os = "macos")]
-fn launch_macos_terminal(config_file: &std::path::Path) -> Result<(), String> {
+fn launch_macos_terminal(
+    cli_command: &str,
+    config_file: &Option<std::path::PathBuf>,
+    working_dir: Option<&std::path::Path>,
+    app_type: &AppType,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
 
     let preferred = crate::settings::get_preferred_terminal();
@@ -625,18 +826,48 @@ fn launch_macos_terminal(config_file: &std::path::Path) -> Result<(), String> {
 
     let temp_dir = std::env::temp_dir();
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
-    let config_path = config_file.to_string_lossy();
+
+    // 构建工作目录的 cd 命令（如果提供）
+    let cd_command = if let Some(dir) = working_dir {
+        let dir_path = dir.to_string_lossy();
+        format!(r#"cd "{dir_path}""#)
+    } else {
+        String::new()
+    };
+
+    // 根据应用类型构建启动命令
+    let launch_command = if *app_type == AppType::Claude {
+        // Claude 需要 --settings 参数
+        let config_path = config_file.as_ref().unwrap().to_string_lossy();
+        format!(r#"{cli_command} --settings "{config_path}""#)
+    } else {
+        // 其他 CLI 直接启动
+        cli_command.to_string()
+    };
+
+    // 清理命令（Claude 需要清理配置文件）
+    let cleanup_command = if *app_type == AppType::Claude {
+        let config_path = config_file.as_ref().unwrap().to_string_lossy();
+        format!(r#"rm -f "{config_path}""#)
+    } else {
+        String::new()
+    };
 
     // Write the shell script to a temp file
+    // 使用 exec 替换当前 shell 进程，trap 确保临时文件被清理
     let script_content = format!(
         r#"#!/bin/bash
-trap 'rm -f "{config_path}" "{script_file}"' EXIT
-echo "Using provider-specific claude config:"
-echo "{config_path}"
-claude --settings "{config_path}"
-exec bash --norc --noprofile
+trap 'rm -f "{script_file}" {cleanup}' EXIT
+{cd_command}
+exec {launch_command}
 "#,
-        config_path = config_path,
+        cd_command = cd_command,
+        launch_command = launch_command,
+        cleanup = if cleanup_command.is_empty() {
+            ""
+        } else {
+            &format!(r#"; "{}""#, cleanup_command)
+        },
         script_file = script_file.display()
     );
 
@@ -653,8 +884,7 @@ exec bash --norc --noprofile
         "alacritty" => launch_macos_open_app("Alacritty", &script_file, true),
         "kitty" => launch_macos_open_app("kitty", &script_file, false),
         "ghostty" => launch_macos_open_app("Ghostty", &script_file, true),
-        "wezterm" => launch_macos_open_app("WezTerm", &script_file, true),
-        _ => launch_macos_terminal_app(&script_file), // "terminal" or default
+        _ => launch_macos_terminal_app(&script_file, working_dir), // "terminal" or default
     };
 
     // If preferred terminal fails and it's not the default, try Terminal.app as fallback
@@ -664,7 +894,7 @@ exec bash --norc --noprofile
             terminal,
             result.as_ref().err()
         );
-        return launch_macos_terminal_app(&script_file);
+        return launch_macos_terminal_app(&script_file, working_dir);
     }
 
     result
@@ -672,7 +902,10 @@ exec bash --norc --noprofile
 
 /// macOS: Terminal.app
 #[cfg(target_os = "macos")]
-fn launch_macos_terminal_app(script_file: &std::path::Path) -> Result<(), String> {
+fn launch_macos_terminal_app(
+    script_file: &std::path::Path,
+    _working_dir: Option<&std::path::Path>,
+) -> Result<(), String> {
     use std::process::Command;
 
     let applescript = format!(
@@ -756,7 +989,7 @@ fn launch_macos_open_app(
 
     let output = cmd
         .output()
-        .map_err(|e| format!("启动 {app_name} 失败: {e}"))?;
+        .map_err(|e| format!("启动 {} 失败: {e}", app_name))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -773,7 +1006,12 @@ fn launch_macos_open_app(
 
 /// Linux: 根据用户首选终端启动
 #[cfg(target_os = "linux")]
-fn launch_linux_terminal(config_file: &std::path::Path) -> Result<(), String> {
+fn launch_linux_terminal(
+    cli_command: &str,
+    config_file: &Option<std::path::PathBuf>,
+    working_dir: Option<&std::path::Path>,
+    app_type: &AppType,
+) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
@@ -794,17 +1032,47 @@ fn launch_linux_terminal(config_file: &std::path::Path) -> Result<(), String> {
     // Create temp script file
     let temp_dir = std::env::temp_dir();
     let script_file = temp_dir.join(format!("cc_switch_launcher_{}.sh", std::process::id()));
-    let config_path = config_file.to_string_lossy();
 
+    // 构建工作目录的 cd 命令（如果提供）
+    let cd_command = if let Some(dir) = working_dir {
+        let dir_path = dir.to_string_lossy();
+        format!(r#"cd "{dir_path}""#)
+    } else {
+        String::new()
+    };
+
+    // 根据应用类型构建启动命令
+    let launch_command = if *app_type == AppType::Claude {
+        // Claude 需要 --settings 参数
+        let config_path = config_file.as_ref().unwrap().to_string_lossy();
+        format!(r#"{cli_command} --settings "{config_path}""#)
+    } else {
+        // 其他 CLI 直接启动
+        cli_command.to_string()
+    };
+
+    // 清理命令（Claude 需要清理配置文件）
+    let cleanup_command = if *app_type == AppType::Claude {
+        let config_path = config_file.as_ref().unwrap().to_string_lossy();
+        format!(r#"rm -f "{config_path}""#)
+    } else {
+        String::new()
+    };
+
+    // 使用 exec 替换当前 shell 进程，trap 确保临时文件被清理
     let script_content = format!(
         r#"#!/bin/bash
-trap 'rm -f "{config_path}" "{script_file}"' EXIT
-echo "Using provider-specific claude config:"
-echo "{config_path}"
-claude --settings "{config_path}"
-exec bash --norc --noprofile
+trap 'rm -f "{script_file}" {cleanup}' EXIT
+{cd_command}
+exec {launch_command}
 "#,
-        config_path = config_path,
+        cd_command = cd_command,
+        launch_command = launch_command,
+        cleanup = if cleanup_command.is_empty() {
+            ""
+        } else {
+            &format!(r#"; "{}""#, cleanup_command)
+        },
         script_file = script_file.display()
     );
 
@@ -864,7 +1132,9 @@ exec bash --norc --noprofile
 
     // Clean up on failure
     let _ = std::fs::remove_file(&script_file);
-    let _ = std::fs::remove_file(config_file);
+    if let Some(ref config) = config_file {
+        let _ = std::fs::remove_file(config);
+    }
     Err(last_error)
 }
 
@@ -879,30 +1149,148 @@ fn which_command(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 查找系统中的 git-bash 路径
+#[cfg(target_os = "windows")]
+fn find_git_bash() -> Option<String> {
+    use std::process::Command;
+
+    // 常见的 Git 安装路径
+    let common_paths = vec![
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+        r"C:\Git\bin\bash.exe",
+    ];
+
+    // 首先检查环境变量
+    if let Ok(bash_path) = std::env::var("CLAUDE_CODE_GIT_BASH_PATH") {
+        if std::path::Path::new(&bash_path).exists() {
+            log::info!("[GitBash] 从环境变量找到: {}", bash_path);
+            return Some(bash_path);
+        }
+    }
+
+    // 检查常见安装路径
+    for path in common_paths {
+        if std::path::Path::new(path).exists() {
+            log::info!("[GitBash] 从常见路径找到: {}", path);
+            return Some(path.to_string());
+        }
+    }
+
+    // 尝试通过 where 命令查找
+    if let Ok(output) = Command::new("where")
+        .args(&["bash.exe"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        if output.status.success() {
+            let paths = String::from_utf8_lossy(&output.stdout);
+            if let Some(first_line) = paths.lines().next() {
+                let bash_path = first_line.trim().to_string();
+                log::info!("[GitBash] 通过 where 命令找到: {}", bash_path);
+                return Some(bash_path);
+            }
+        }
+    }
+
+    log::warn!("[GitBash] 未找到 git-bash");
+    None
+}
+
 /// Windows: 根据用户首选终端启动
 #[cfg(target_os = "windows")]
 fn launch_windows_terminal(
+    cli_command: &str,
+    config_file: &Option<std::path::PathBuf>,
     temp_dir: &std::path::Path,
-    config_file: &std::path::Path,
+    _provider_id: &str,
+    working_dir: Option<&std::path::Path>,
+    app_type: &AppType,
 ) -> Result<(), String> {
     let preferred = crate::settings::get_preferred_terminal();
     let terminal = preferred.as_deref().unwrap_or("cmd");
 
-    let bat_file = temp_dir.join(format!("cc_switch_claude_{}.bat", std::process::id()));
-    let config_path_for_batch = config_file.to_string_lossy().replace('&', "^&");
+    let bat_file = temp_dir.join(format!(
+        "cc_switch_{}_{}.bat",
+        cli_command,
+        std::process::id()
+    ));
 
+    // 构建工作目录的 cd 命令（如果提供）
+    let cd_command = if let Some(dir) = working_dir {
+        let dir_path = dir.to_string_lossy().replace('&', "^&");
+        format!(r#"cd /d "{}""#, dir_path)
+    } else {
+        String::new()
+    };
+
+    // 获取 CLI 命令（Windows 上 npm 安装的 CLI 通常是 .cmd 文件）
+    let cli_command_exe = if cfg!(windows) {
+        // Windows 上优先尝试 .cmd 扩展名
+        format!("{}.cmd", cli_command)
+    } else {
+        cli_command.to_string()
+    };
+
+    // 根据应用类型构建启动命令
+    let (launch_line, cleanup_lines) = if *app_type == AppType::Claude {
+        // Claude 需要 --settings 参数
+        let config_path = config_file
+            .as_ref()
+            .unwrap()
+            .to_string_lossy()
+            .replace('&', "^&");
+        let launch_line = format!(r#"{} --settings "{}""#, cli_command_exe, config_path);
+        let cleanup_lines = format!(r#"del "{}" >nul 2>&1"#, config_path);
+        (launch_line, cleanup_lines)
+    } else {
+        // 其他 CLI 直接启动
+        (cli_command_exe.clone(), String::new())
+    };
+
+    // 查找 git-bash 并设置环境变量（Claude Code 需要）
+    let git_bash_set = if *app_type == AppType::Claude {
+        if let Some(bash_path) = find_git_bash() {
+            format!(r#"set "CLAUDE_CODE_GIT_BASH_PATH={}""#, bash_path)
+        } else {
+            "// git-bash not found, Claude may fail".to_string()
+        }
+    } else {
+        String::new()
+    };
+
+    // 异步启动 CLI，不等待命令完成
+    // Note: Using English only to avoid encoding issues on Windows (bat files use system codepage)
     let content = format!(
-        "@echo off
-echo Using provider-specific claude config:
-echo {}
-claude --settings \"{}\"
-del \"{}\" >nul 2>&1
-del \"%~f0\" >nul 2>&1
-",
-        config_path_for_batch, config_path_for_batch, config_path_for_batch
+        r#"@echo off
+{}
+echo Starting {}...
+{}
+echo Running: {}
+{}
+{}
+del "%~f0" >nul 2>&1
+"#,
+        git_bash_set,
+        cli_command,
+        cd_command,
+        launch_line,
+        launch_line,  // Direct execution without 'call' for async launch
+        if cleanup_lines.is_empty() {
+            String::new()
+        } else {
+            cleanup_lines.clone()
+        }
     );
 
     std::fs::write(&bat_file, &content).map_err(|e| format!("写入批处理文件失败: {e}"))?;
+
+    // 添加调试日志
+    log::info!("[Terminal] 批处理文件路径: {}", bat_file.display());
+    log::info!("[Terminal] CLI 命令: {}", cli_command_exe);
+    log::info!("[Terminal] 启动行: {}", launch_line);
+    log::info!("[Terminal] 工作目录: {:?}", working_dir);
+    log::info!("[Terminal] 终端类型: {}", terminal);
 
     let bat_path = bat_file.to_string_lossy();
     let ps_cmd = format!("& '{}'", bat_path);
@@ -912,9 +1300,14 @@ del \"%~f0\" >nul 2>&1
         "powershell" => run_windows_start_command(
             &["powershell", "-NoExit", "-Command", &ps_cmd],
             "PowerShell",
+            working_dir,
         ),
-        "wt" => run_windows_start_command(&["wt", "cmd", "/K", &bat_path], "Windows Terminal"),
-        _ => run_windows_start_command(&["cmd", "/K", &bat_path], "cmd"), // "cmd" or default
+        "wt" => run_windows_start_command(
+            &["wt", "cmd", "/K", &bat_path],
+            "Windows Terminal",
+            working_dir,
+        ),
+        _ => run_windows_start_command(&["cmd", "/K", &bat_path], "cmd", working_dir), // "cmd" or default
     };
 
     // If preferred terminal fails and it's not the default, try cmd as fallback
@@ -924,7 +1317,7 @@ del \"%~f0\" >nul 2>&1
             terminal,
             result.as_ref().err()
         );
-        return run_windows_start_command(&["cmd", "/K", &bat_path], "cmd");
+        return run_windows_start_command(&["cmd", "/K", &bat_path], "cmd", working_dir);
     }
 
     result
@@ -932,7 +1325,11 @@ del \"%~f0\" >nul 2>&1
 
 /// Windows: Run a start command with common error handling
 #[cfg(target_os = "windows")]
-fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), String> {
+fn run_windows_start_command(
+    args: &[&str],
+    terminal_name: &str,
+    _working_dir: Option<&std::path::Path>,
+) -> Result<(), String> {
     use std::process::Command;
 
     let mut full_args = vec!["/C", "start"];
@@ -957,17 +1354,38 @@ fn run_windows_start_command(args: &[&str], terminal_name: &str) -> Result<(), S
     Ok(())
 }
 
-/// 设置窗口主题（Windows/macOS 标题栏颜色）
-/// theme: "dark" | "light" | "system"
-#[tauri::command]
-pub async fn set_window_theme(window: tauri::Window, theme: String) -> Result<(), String> {
-    use tauri::Theme;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let tauri_theme = match theme.as_str() {
-        "dark" => Some(Theme::Dark),
-        "light" => Some(Theme::Light),
-        _ => None, // system default
-    };
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_find_git_bash_with_env_var() {
+        // 设置测试环境变量
+        let test_bash_path = r"C:\Test\Git\bin\bash.exe";
+        std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", test_bash_path);
 
-    window.set_theme(tauri_theme).map_err(|e| e.to_string())
+        // 由于测试环境可能没有这个路径，我们只验证函数会读取环境变量
+        // 实际的路径检查在生产环境中进行
+        let result = find_git_bash();
+
+        // 清理环境变量
+        std::env::remove_var("CLAUDE_CODE_GIT_BASH_PATH");
+
+        // 如果路径不存在（测试环境），函数会尝试其他方法
+        // 这个测试主要验证函数不会崩溃
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_find_git_bash_no_env_var() {
+        // 确保环境变量未设置
+        std::env::remove_var("CLAUDE_CODE_GIT_BASH_PATH");
+
+        // 测试在没有环境变量时的行为
+        let result = find_git_bash();
+
+        // 这个测试主要验证函数不会崩溃
+        // 在实际环境中可能会找到 git-bash
+    }
 }

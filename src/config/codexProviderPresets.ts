@@ -183,7 +183,7 @@ requires_openai_auth = true`,
     auth: generateThirdPartyAuth(""),
     config: generateThirdPartyConfig(
       "aigocode",
-      "https://api.aigocode.com",
+      "https://api.aigocode.com/openai",
       "gpt-5.2",
     ),
     endpointCandidates: ["https://api.aigocode.com"],

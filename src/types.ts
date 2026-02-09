@@ -3,8 +3,7 @@ export type ProviderCategory =
   | "cn_official" // 开源官方（原"国产官方"）
   | "aggregator" // 聚合网站
   | "third_party" // 第三方供应商
-  | "custom" // 自定义
-  | "omo"; // Oh My OpenCode
+  | "custom"; // 自定义
 
 export interface Provider {
   id: string;
@@ -212,24 +211,6 @@ export interface Settings {
   // Windows: "cmd" | "powershell" | "wt"
   // Linux: "gnome-terminal" | "konsole" | "xfce4-terminal" | "alacritty" | "kitty" | "ghostty"
   preferredTerminal?: string;
-}
-
-export interface SessionMeta {
-  providerId: string;
-  sessionId: string;
-  title?: string;
-  summary?: string;
-  projectDir?: string | null;
-  createdAt?: number;
-  lastActiveAt?: number;
-  sourcePath?: string;
-  resumeCommand?: string;
-}
-
-export interface SessionMessage {
-  role: string;
-  content: string;
-  ts?: number;
 }
 
 // MCP 服务器连接参数（宽松：允许扩展字段）

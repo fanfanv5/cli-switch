@@ -8,19 +8,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useProviderStats } from "@/lib/query/usage";
-import { fmtUsd } from "./format";
 
-interface ProviderStatsTableProps {
-  refreshIntervalMs: number;
-}
-
-export function ProviderStatsTable({
-  refreshIntervalMs,
-}: ProviderStatsTableProps) {
+export function ProviderStatsTable() {
   const { t } = useTranslation();
-  const { data: stats, isLoading } = useProviderStats({
-    refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
-  });
+  const { data: stats, isLoading } = useProviderStats();
 
   if (isLoading) {
     return <div className="h-[400px] animate-pulse rounded bg-gray-100" />;
@@ -72,7 +63,7 @@ export function ProviderStatsTable({
                   {stat.totalTokens.toLocaleString()}
                 </TableCell>
                 <TableCell className="text-right">
-                  {fmtUsd(stat.totalCost, 4)}
+                  ${parseFloat(stat.totalCost).toFixed(4)}
                 </TableCell>
                 <TableCell className="text-right">
                   {stat.successRate.toFixed(1)}%

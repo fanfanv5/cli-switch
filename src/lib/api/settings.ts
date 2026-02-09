@@ -150,6 +150,29 @@ export const settingsApi = {
   async setLogConfig(config: LogConfig): Promise<boolean> {
     return await invoke("set_log_config", { config });
   },
+
+  async installTool(tool: string): Promise<CliToolInstallResult> {
+    return await invoke("install_cli_tool", { tool, action: "install" });
+  },
+
+  async upgradeTool(tool: string): Promise<CliToolInstallResult> {
+    return await invoke("install_cli_tool", { tool, action: "upgrade" });
+  },
+
+  // Windows context menu (仅 Windows 平台可用)
+  async registerContextMenu(): Promise<void> {
+    console.log('[SettingsAPI] 调用 registerContextMenu');
+    await invoke('register_context_menu');
+    console.log('[SettingsAPI] invoke 完成');
+  },
+
+  async unregisterContextMenu(): Promise<void> {
+    await invoke('unregister_context_menu');
+  },
+
+  async isContextMenuRegistered(): Promise<boolean> {
+    return await invoke('is_context_menu_registered');
+  },
 };
 
 export interface RectifierConfig {
@@ -160,4 +183,13 @@ export interface RectifierConfig {
 export interface LogConfig {
   enabled: boolean;
   level: "error" | "warn" | "info" | "debug" | "trace";
+}
+
+export interface CliToolInstallResult {
+  success: boolean;
+  tool: string;
+  action: "install" | "upgrade";
+  message: string;
+  output: string;
+  error?: string;
 }

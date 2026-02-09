@@ -4,26 +4,19 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useUsageSummary } from "@/lib/query/usage";
 import { Activity, DollarSign, Layers, Database, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
-import { fmtUsd, parseFiniteNumber } from "./format";
 
 interface UsageSummaryCardsProps {
   days: number;
-  refreshIntervalMs: number;
 }
 
-export function UsageSummaryCards({
-  days,
-  refreshIntervalMs,
-}: UsageSummaryCardsProps) {
+export function UsageSummaryCards({ days }: UsageSummaryCardsProps) {
   const { t } = useTranslation();
 
-  const { data: summary, isLoading } = useUsageSummary(days, {
-    refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
-  });
+  const { data: summary, isLoading } = useUsageSummary(days);
 
   const stats = useMemo(() => {
     const totalRequests = summary?.totalRequests ?? 0;
-    const totalCost = parseFiniteNumber(summary?.totalCost);
+    const totalCost = parseFloat(summary?.totalCost || "0");
 
     const inputTokens = summary?.totalInputTokens ?? 0;
     const outputTokens = summary?.totalOutputTokens ?? 0;
@@ -44,7 +37,7 @@ export function UsageSummaryCards({
       },
       {
         title: t("usage.totalCost"),
-        value: totalCost == null ? "--" : fmtUsd(totalCost, 4),
+        value: `$${totalCost.toFixed(4)}`,
         icon: DollarSign,
         color: "text-green-500",
         bg: "bg-green-500/10",

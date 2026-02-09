@@ -4,9 +4,8 @@
     "windows": [
       {
         "label": "main",
-        "title": "CC Switch",
+        "title": "CLI Switch",
         "titleBarStyle": "Visible",
-        "visible": false,
         "minWidth": 900,
         "minHeight": 600
       }

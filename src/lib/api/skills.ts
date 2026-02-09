@@ -1,8 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppId } from "@/lib/api/types";
-
 // ========== 类型定义 ==========
+
+export type AppType = "claude" | "codex" | "gemini" | "opencode";
 
 /** Skill 应用启用状态 */
 export interface SkillApps {
@@ -80,7 +80,7 @@ export const skillsApi = {
   /** 安装 Skill（统一安装） */
   async installUnified(
     skill: DiscoverableSkill,
-    currentApp: AppId,
+    currentApp: AppType,
   ): Promise<InstalledSkill> {
     return await invoke("install_skill_unified", { skill, currentApp });
   },
@@ -91,7 +91,11 @@ export const skillsApi = {
   },
 
   /** 切换 Skill 的应用启用状态 */
-  async toggleApp(id: string, app: AppId, enabled: boolean): Promise<boolean> {
+  async toggleApp(
+    id: string,
+    app: AppType,
+    enabled: boolean,
+  ): Promise<boolean> {
     return await invoke("toggle_skill_app", { id, app, enabled });
   },
 
@@ -113,7 +117,7 @@ export const skillsApi = {
   // ========== 兼容旧 API ==========
 
   /** 获取技能列表（兼容旧 API） */
-  async getAll(app: AppId = "claude"): Promise<Skill[]> {
+  async getAll(app: AppType = "claude"): Promise<Skill[]> {
     if (app === "claude") {
       return await invoke("get_skills");
     }
@@ -121,7 +125,7 @@ export const skillsApi = {
   },
 
   /** 安装技能（兼容旧 API） */
-  async install(directory: string, app: AppId = "claude"): Promise<boolean> {
+  async install(directory: string, app: AppType = "claude"): Promise<boolean> {
     if (app === "claude") {
       return await invoke("install_skill", { directory });
     }
@@ -129,7 +133,10 @@ export const skillsApi = {
   },
 
   /** 卸载技能（兼容旧 API） */
-  async uninstall(directory: string, app: AppId = "claude"): Promise<boolean> {
+  async uninstall(
+    directory: string,
+    app: AppType = "claude",
+  ): Promise<boolean> {
     if (app === "claude") {
       return await invoke("uninstall_skill", { directory });
     }
@@ -163,7 +170,7 @@ export const skillsApi = {
   /** 从 ZIP 文件安装 Skills */
   async installFromZip(
     filePath: string,
-    currentApp: AppId,
+    currentApp: AppType,
   ): Promise<InstalledSkill[]> {
     return await invoke("install_skills_from_zip", { filePath, currentApp });
   },

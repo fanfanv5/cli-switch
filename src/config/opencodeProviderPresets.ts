@@ -1,3 +1,7 @@
+/**
+ * OpenCode 预设供应商配置模板
+ * OpenCode 使用 AI SDK npm 包，配置结构与其他应用不同
+ */
 import type { ProviderCategory, OpenCodeProviderConfig } from "../types";
 import type { PresetTheme, TemplateValueConfig } from "./claudeProviderPresets";
 
@@ -5,18 +9,27 @@ export interface OpenCodeProviderPreset {
   name: string;
   websiteUrl: string;
   apiKeyUrl?: string;
+  /** OpenCode settings_config 结构 */
   settingsConfig: OpenCodeProviderConfig;
   isOfficial?: boolean;
   isPartner?: boolean;
   partnerPromotionKey?: string;
   category?: ProviderCategory;
+  /** 模板变量定义 */
   templateValues?: Record<string, TemplateValueConfig>;
+  /** 视觉主题配置 */
   theme?: PresetTheme;
+  /** 图标名称 */
   icon?: string;
+  /** 图标颜色 */
   iconColor?: string;
+  /** 标记为自定义模板（用于 UI 区分） */
   isCustomTemplate?: boolean;
 }
 
+/**
+ * OpenCode npm 包选项（AI SDK 生态）
+ */
 export const opencodeNpmPackages = [
   { value: "@ai-sdk/openai", label: "OpenAI" },
   { value: "@ai-sdk/openai-compatible", label: "OpenAI Compatible" },
@@ -24,7 +37,11 @@ export const opencodeNpmPackages = [
   { value: "@ai-sdk/google", label: "Google (Gemini)" },
 ] as const;
 
+/**
+ * OpenCode 供应商预设列表
+ */
 export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
+  // ========== 国产官方 ==========
   {
     name: "DeepSeek",
     websiteUrl: "https://platform.deepseek.com",
@@ -120,21 +137,23 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     },
   },
   {
-    name: "Bailian",
+    name: "Qwen Coder",
     websiteUrl: "https://bailian.console.aliyun.com",
     apiKeyUrl: "https://bailian.console.aliyun.com/#/api-key",
     settingsConfig: {
       npm: "@ai-sdk/openai-compatible",
-      name: "Bailian",
+      name: "Qwen Coder",
       options: {
         baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
         apiKey: "",
       },
-      models: {},
+      models: {
+        "qwen3-max": { name: "Qwen3 Max" },
+      },
     },
     category: "cn_official",
-    icon: "bailian",
-    iconColor: "#624AFF",
+    icon: "qwen",
+    iconColor: "#FF6A00",
     templateValues: {
       baseURL: {
         label: "Base URL",
@@ -457,6 +476,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     },
   },
 
+  // ========== 聚合网站 ==========
   {
     name: "AiHubMix",
     websiteUrl: "https://aihubmix.com",
@@ -565,6 +585,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     },
   },
 
+  // ========== 第三方合作伙伴 ==========
   {
     name: "PackyCode",
     websiteUrl: "https://www.packyapi.com",
@@ -630,7 +651,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
       npm: "@ai-sdk/anthropic",
       name: "AIGoCode",
       options: {
-        baseURL: "https://api.aigocode.com",
+        baseURL: "https://api.aigocode.com/v1",
         apiKey: "",
       },
       models: {
@@ -710,6 +731,7 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
     },
   },
 
+  // ========== 自定义模板 ==========
   {
     name: "OpenAI Compatible",
     websiteUrl: "",
@@ -737,19 +759,5 @@ export const opencodeProviderPresets: OpenCodeProviderPreset[] = [
         editorValue: "",
       },
     },
-  },
-
-  {
-    name: "Oh My OpenCode",
-    websiteUrl: "https://github.com/code-yeongyu/oh-my-opencode",
-    settingsConfig: {
-      npm: "",
-      options: {},
-      models: {},
-    },
-    category: "omo" as ProviderCategory,
-    icon: "opencode",
-    iconColor: "#8B5CF6",
-    isCustomTemplate: true,
   },
 ];

@@ -20,6 +20,7 @@ import type { Provider } from "@/types";
 import type { AppId } from "@/lib/api";
 import { providersApi } from "@/lib/api/providers";
 import { useDragSort } from "@/hooks/useDragSort";
+import { useStreamCheck } from "@/hooks/useStreamCheck";
 import { ProviderCard } from "@/components/providers/ProviderCard";
 import { ProviderEmptyState } from "@/components/providers/ProviderEmptyState";
 import {
@@ -28,7 +29,6 @@ import {
   useAddToFailoverQueue,
   useRemoveFromFailoverQueue,
 } from "@/lib/query/failover";
-import { useCurrentOmoProviderId, useOmoProviderCount } from "@/lib/query/omo";
 import { useCallback } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -40,8 +40,8 @@ interface ProviderListProps {
   onSwitch: (provider: Provider) => void;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
+  /** OpenCode: remove from live config (not delete from database) */
   onRemoveFromConfig?: (provider: Provider) => void;
-  onDisableOmo?: () => void;
   onDuplicate: (provider: Provider) => void;
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
@@ -61,7 +61,6 @@ export function ProviderList({
   onEdit,
   onDelete,
   onRemoveFromConfig,
-  onDisableOmo,
   onDuplicate,
   onConfigureUsage,
   onOpenWebsite,
@@ -78,12 +77,14 @@ export function ProviderList({
     appId,
   );
 
+  // OpenCode: 查询 live 配置中的供应商 ID 列表，用于判断 isInConfig
   const { data: opencodeLiveIds } = useQuery({
     queryKey: ["opencodeLiveProviderIds"],
     queryFn: () => providersApi.getOpenCodeLiveProviderIds(),
     enabled: appId === "opencode",
   });
 
+  // OpenCode: 判断供应商是否已添加到 opencode.json
   const isProviderInConfig = useCallback(
     (providerId: string): boolean => {
       if (appId !== "opencode") return true; // 非 OpenCode 应用始终返回 true
@@ -92,18 +93,20 @@ export function ProviderList({
     [appId, opencodeLiveIds],
   );
 
+  // 流式健康检查
+  const { checkProvider, isChecking } = useStreamCheck(appId);
+
+  // 故障转移相关
   const { data: isAutoFailoverEnabled } = useAutoFailoverEnabled(appId);
   const { data: failoverQueue } = useFailoverQueue(appId);
   const addToQueue = useAddToFailoverQueue();
   const removeFromQueue = useRemoveFromFailoverQueue();
 
+  // 联动状态：只有当前应用开启代理接管且故障转移开启时才启用故障转移模式
   const isFailoverModeActive =
     isProxyTakeover === true && isAutoFailoverEnabled === true;
 
-  const isOpenCode = appId === "opencode";
-  const { data: currentOmoId } = useCurrentOmoProviderId(isOpenCode);
-  const { data: omoProviderCount } = useOmoProviderCount(isOpenCode);
-
+  // 计算供应商在故障转移队列中的优先级（基于 sortIndex 排序）
   const getFailoverPriority = useCallback(
     (providerId: string): number | undefined => {
       if (!isFailoverModeActive || !failoverQueue) return undefined;
@@ -115,6 +118,7 @@ export function ProviderList({
     [isFailoverModeActive, failoverQueue],
   );
 
+  // 判断供应商是否在故障转移队列中
   const isInFailoverQueue = useCallback(
     (providerId: string): boolean => {
       if (!isFailoverModeActive || !failoverQueue) return false;
@@ -123,6 +127,7 @@ export function ProviderList({
     [isFailoverModeActive, failoverQueue],
   );
 
+  // 切换供应商的故障转移队列状态
   const handleToggleFailover = useCallback(
     (providerId: string, enabled: boolean) => {
       if (enabled) {
@@ -133,6 +138,10 @@ export function ProviderList({
     },
     [appId, addToQueue, removeFromQueue],
   );
+
+  const handleTest = (provider: Provider) => {
+    checkProvider(provider.id, provider.name);
+  };
 
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -205,44 +214,35 @@ export function ProviderList({
         strategy={verticalListSortingStrategy}
       >
         <div className="space-y-3">
-          {filteredProviders.map((provider) => {
-            const isOmo = provider.category === "omo";
-            const isOmoCurrent = isOmo && provider.id === (currentOmoId || "");
-            return (
-              <SortableProviderCard
-                key={provider.id}
-                provider={provider}
-                isCurrent={
-                  isOmo ? isOmoCurrent : provider.id === currentProviderId
-                }
-                appId={appId}
-                isInConfig={isProviderInConfig(provider.id)}
-                isOmo={isOmo}
-                isLastOmo={
-                  isOmo && (omoProviderCount ?? 0) <= 1 && isOmoCurrent
-                }
-                onSwitch={onSwitch}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onRemoveFromConfig={onRemoveFromConfig}
-                onDisableOmo={onDisableOmo}
-                onDuplicate={onDuplicate}
-                onConfigureUsage={onConfigureUsage}
-                onOpenWebsite={onOpenWebsite}
-                onOpenTerminal={onOpenTerminal}
-                isTesting={false} // isChecking(provider.id) - 测试功能已隐藏
-                isProxyRunning={isProxyRunning}
-                isProxyTakeover={isProxyTakeover}
-                isAutoFailoverEnabled={isFailoverModeActive}
-                failoverPriority={getFailoverPriority(provider.id)}
-                isInFailoverQueue={isInFailoverQueue(provider.id)}
-                onToggleFailover={(enabled) =>
-                  handleToggleFailover(provider.id, enabled)
-                }
-                activeProviderId={activeProviderId}
-              />
-            );
-          })}
+          {filteredProviders.map((provider) => (
+            <SortableProviderCard
+              key={provider.id}
+              provider={provider}
+              isCurrent={provider.id === currentProviderId}
+              appId={appId}
+              isInConfig={isProviderInConfig(provider.id)}
+              onSwitch={onSwitch}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onRemoveFromConfig={onRemoveFromConfig}
+              onDuplicate={onDuplicate}
+              onConfigureUsage={onConfigureUsage}
+              onOpenWebsite={onOpenWebsite}
+              onOpenTerminal={onOpenTerminal}
+              onTest={appId !== "opencode" ? handleTest : undefined}
+              isTesting={isChecking(provider.id)}
+              isProxyRunning={isProxyRunning}
+              isProxyTakeover={isProxyTakeover}
+              // 故障转移相关：联动状态
+              isAutoFailoverEnabled={isFailoverModeActive}
+              failoverPriority={getFailoverPriority(provider.id)}
+              isInFailoverQueue={isInFailoverQueue(provider.id)}
+              onToggleFailover={(enabled) =>
+                handleToggleFailover(provider.id, enabled)
+              }
+              activeProviderId={activeProviderId}
+            />
+          ))}
         </div>
       </SortableContext>
     </DndContext>
@@ -332,13 +332,11 @@ interface SortableProviderCardProps {
   isCurrent: boolean;
   appId: AppId;
   isInConfig: boolean;
-  isOmo: boolean;
-  isLastOmo: boolean;
   onSwitch: (provider: Provider) => void;
   onEdit: (provider: Provider) => void;
   onDelete: (provider: Provider) => void;
+  /** OpenCode: remove from live config (not delete from database) */
   onRemoveFromConfig?: (provider: Provider) => void;
-  onDisableOmo?: () => void;
   onDuplicate: (provider: Provider) => void;
   onConfigureUsage?: (provider: Provider) => void;
   onOpenWebsite: (url: string) => void;
@@ -347,6 +345,7 @@ interface SortableProviderCardProps {
   isTesting: boolean;
   isProxyRunning: boolean;
   isProxyTakeover: boolean;
+  // 故障转移相关
   isAutoFailoverEnabled: boolean;
   failoverPriority?: number;
   isInFailoverQueue: boolean;
@@ -359,13 +358,10 @@ function SortableProviderCard({
   isCurrent,
   appId,
   isInConfig,
-  isOmo,
-  isLastOmo,
   onSwitch,
   onEdit,
   onDelete,
   onRemoveFromConfig,
-  onDisableOmo,
   onDuplicate,
   onConfigureUsage,
   onOpenWebsite,
@@ -401,13 +397,10 @@ function SortableProviderCard({
         isCurrent={isCurrent}
         appId={appId}
         isInConfig={isInConfig}
-        isOmo={isOmo}
-        isLastOmo={isLastOmo}
         onSwitch={onSwitch}
         onEdit={onEdit}
         onDelete={onDelete}
         onRemoveFromConfig={onRemoveFromConfig}
-        onDisableOmo={onDisableOmo}
         onDuplicate={onDuplicate}
         onConfigureUsage={
           onConfigureUsage ? (item) => onConfigureUsage(item) : () => undefined
@@ -423,6 +416,7 @@ function SortableProviderCard({
           listeners,
           isDragging,
         }}
+        // 故障转移相关
         isAutoFailoverEnabled={isAutoFailoverEnabled}
         failoverPriority={failoverPriority}
         isInFailoverQueue={isInFailoverQueue}

@@ -8,6 +8,7 @@ mod commands;
 mod config;
 mod database;
 mod deeplink;
+use std::str::FromStr;
 mod error;
 mod gemini_config;
 mod gemini_mcp;
@@ -21,7 +22,6 @@ mod provider;
 mod provider_defaults;
 mod proxy;
 mod services;
-mod session_manager;
 mod settings;
 mod store;
 mod tray;
@@ -150,6 +150,92 @@ fn handle_deeplink_url(
     true
 }
 
+/// 处理从文件夹右键菜单打开终端的请求
+///
+/// 解析命令行参数：
+/// --open-terminal --app <app_type> --dir <directory> [--provider-id <id>]
+fn handle_open_terminal_from_context_menu(app: &tauri::AppHandle, args: &[String]) {
+    log::info!("检测到右键菜单终端打开请求");
+
+    let mut app_type = String::new();
+    let mut dir = String::new();
+    let mut provider_id = Option::<String>::None;
+
+    // 解析命令行参数
+    let mut iter = args.iter().peekable();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--app" => {
+                app_type = iter.next().cloned().unwrap_or_default();
+            }
+            "--dir" => {
+                dir = iter.next().cloned().unwrap_or_default();
+            }
+            "--provider-id" => {
+                provider_id = iter.next().cloned();
+            }
+            _ => {}
+        }
+    }
+
+    log::info!("解析参数: app={}, dir={}, provider_id={:?}", app_type, dir, provider_id);
+
+    if app_type.is_empty() || dir.is_empty() {
+        log::error!("参数不完整: app_type={}, dir={}", app_type, dir);
+        return;
+    }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Some(state) = app_handle.try_state::<AppState>() {
+            if let Some(pid) = provider_id {
+                // 供应商终端：使用现有的 open_provider_terminal
+                log::info!("启动供应商终端: app={}, provider_id={}", app_type, pid);
+                let working_dir = Some(dir);
+                let _ = commands::open_provider_terminal(
+                    state,
+                    app_type,
+                    pid,
+                    working_dir,
+                )
+                .await;
+            } else {
+                // 默认终端：创建临时空供应商配置
+                log::info!("启动默认终端: app={}", app_type);
+                match crate::app_config::AppType::from_str(&app_type) {
+                    Ok(app_type_enum) => {
+                        // 使用内部方法启动终端
+                        let working_dir = Some(dir);
+                        let _ = launch_default_terminal(&app_type_enum, working_dir).await;
+                    }
+                    Err(e) => {
+                        log::error!("无效的应用类型 {}: {}", app_type, e);
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// 启动默认终端（不带供应商配置）
+async fn launch_default_terminal(
+    app_type: &crate::app_config::AppType,
+    working_dir: Option<String>,
+) -> Result<(), String> {
+    use crate::commands::{
+        extract_env_vars_from_config, launch_terminal_with_env,
+    };
+
+    let env_vars = extract_env_vars_from_config(&serde_json::json!({}), app_type);
+    let working_dir_path = working_dir
+        .as_ref()
+        .map(|p| std::path::Path::new(p))
+        .filter(|p| p.is_absolute());
+
+    launch_terminal_with_env(env_vars, "default", working_dir_path, app_type)?;
+    Ok(())
+}
+
 /// 更新托盘菜单的Tauri命令
 #[tauri::command]
 async fn update_tray_menu(
@@ -199,6 +285,26 @@ pub fn run() {
             log::debug!("Args count: {}", args.len());
             for (i, arg) in args.iter().enumerate() {
                 log::debug!("  arg[{i}]: {}", redact_url_for_log(arg));
+            }
+
+            // 检查是否为右键菜单打开终端的请求
+            if args.iter().any(|a| a == "--open-terminal") {
+                handle_open_terminal_from_context_menu(app, &args);
+                return;
+            }
+
+            // 检查是否为隐藏模式的右键菜单注册请求（管理员权限）
+            if args.iter().any(|a| a == "--register-context-menu-hidden") {
+                #[cfg(target_os = "windows")]
+                {
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = commands::register_context_menu_hidden(app_clone).await;
+                        // 注册完成后退出
+                        std::process::exit(0);
+                    });
+                }
+                return;
             }
 
             // Check for deep link URL in args (mainly for Windows/Linux command line)
@@ -257,16 +363,17 @@ pub fn run() {
             panic_hook::init_app_config_dir(crate::config::get_app_config_dir());
 
             // 注册 Updater 插件（桌面端）
-            #[cfg(desktop)]
-            {
-                if let Err(e) = app
-                    .handle()
-                    .plugin(tauri_plugin_updater::Builder::new().build())
-                {
-                    // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
-                    log::warn!("初始化 Updater 插件失败，已跳过：{e}");
-                }
-            }
+            // TODO: tauri_plugin_updater 未在 Cargo.toml 中启用，暂时注释
+            // #[cfg(desktop)]
+            // {
+            //     if let Err(e) = app
+            //         .handle()
+            //         .plugin(tauri_plugin_updater::Builder::new().build())
+            //     {
+            //         // 若配置不完整（如缺少 pubkey），跳过 Updater 而不中断应用
+            //         log::warn!("初始化 Updater 插件失败，已跳过：{e}");
+            //     }
+            // }
             // 初始化日志（单文件输出到 <app_config_dir>/logs/cc-switch.log）
             {
                 use tauri_plugin_log::{RotationStrategy, Target, TargetKind, TimezoneStrategy};
@@ -501,28 +608,6 @@ pub fn run() {
                 }
                 Ok(_) => log::debug!("○ No OpenCode providers found to import"),
                 Err(e) => log::debug!("○ Failed to import OpenCode providers: {e}"),
-            }
-
-            // 2.2 OMO 配置导入（当数据库中无 OMO provider 时，从本地文件导入）
-            {
-                let has_omo = app_state
-                    .db
-                    .get_all_providers("opencode")
-                    .map(|providers| providers.values().any(|p| p.category.as_deref() == Some("omo")))
-                    .unwrap_or(false);
-                if !has_omo {
-                    match crate::services::OmoService::import_from_local(&app_state) {
-                        Ok(provider) => {
-                            log::info!("✓ Imported OMO config from local as provider '{}'", provider.name);
-                        }
-                        Err(AppError::OmoConfigNotFound) => {
-                            log::debug!("○ No OMO config to import");
-                        }
-                        Err(e) => {
-                            log::warn!("✗ Failed to import OMO config from local: {e}");
-                        }
-                    }
-                }
             }
 
             // 3. 导入 MCP 服务器配置（表空时触发）
@@ -885,6 +970,10 @@ pub fn run() {
             commands::check_env_conflicts,
             commands::delete_env_vars,
             commands::restore_env_backup,
+            // Windows context menu
+            commands::register_context_menu,
+            commands::unregister_context_menu,
+            commands::is_context_menu_registered,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,
             commands::install_skill_unified,
@@ -956,11 +1045,8 @@ pub fn run() {
             commands::stream_check_all_providers,
             commands::get_stream_check_config,
             commands::save_stream_check_config,
-            // Session manager
-            commands::list_sessions,
-            commands::get_session_messages,
-            commands::launch_session_terminal,
             commands::get_tool_versions,
+            commands::install_cli_tool,
             // Provider terminal
             commands::open_provider_terminal,
             // Universal Provider management
@@ -978,12 +1064,6 @@ pub fn run() {
             commands::test_proxy_url,
             commands::get_upstream_proxy_status,
             commands::scan_local_proxies,
-            // Window theme control
-            commands::set_window_theme,
-            commands::read_omo_local_file,
-            commands::get_current_omo_provider_id,
-            commands::get_omo_provider_count,
-            commands::disable_current_omo,
         ]);
 
     let app = builder

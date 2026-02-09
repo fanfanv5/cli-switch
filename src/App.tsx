@@ -8,14 +8,14 @@ import {
   Plus,
   Settings,
   ArrowLeft,
+  // Bot, // TODO: Agents 功能开发中，暂时不需要
   Book,
   Wrench,
   RefreshCw,
-  History,
-  BarChart2,
-  Download,
-  FolderArchive,
   Search,
+  Download,
+  BarChart2,
+  FolderArchive,
 } from "lucide-react";
 import type { Provider, VisibleApps } from "@/types";
 import type { EnvConflict } from "@/types/env";
@@ -54,8 +54,6 @@ import { AgentsPanel } from "@/components/agents/AgentsPanel";
 import { UniversalProviderPanel } from "@/components/universal";
 import { McpIcon } from "@/components/BrandIcons";
 import { Button } from "@/components/ui/button";
-import { SessionManagerPage } from "@/components/sessions/SessionManagerPage";
-import { useDisableCurrentOmo } from "@/lib/query/omo";
 
 type View =
   | "providers"
@@ -65,58 +63,23 @@ type View =
   | "skillsDiscovery"
   | "mcp"
   | "agents"
-  | "universal"
-  | "sessions";
+  | "universal";
 
+// macOS Overlay mode needs space for traffic light buttons, Windows/Linux use native titlebar
 const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
 const HEADER_HEIGHT = 64; // px
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
-
-const STORAGE_KEY = "cc-switch-last-app";
-const VALID_APPS: AppId[] = ["claude", "codex", "gemini", "opencode"];
-
-const getInitialApp = (): AppId => {
-  const saved = localStorage.getItem(STORAGE_KEY) as AppId | null;
-  if (saved && VALID_APPS.includes(saved)) {
-    return saved;
-  }
-  return "claude";
-};
-
-const VIEW_STORAGE_KEY = "cc-switch-last-view";
-const VALID_VIEWS: View[] = [
-  "providers",
-  "settings",
-  "prompts",
-  "skills",
-  "skillsDiscovery",
-  "mcp",
-  "agents",
-  "universal",
-  "sessions",
-];
-
-const getInitialView = (): View => {
-  const saved = localStorage.getItem(VIEW_STORAGE_KEY) as View | null;
-  if (saved && VALID_VIEWS.includes(saved)) {
-    return saved;
-  }
-  return "providers";
-};
 
 function App() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
 
-  const [activeApp, setActiveApp] = useState<AppId>(getInitialApp);
-  const [currentView, setCurrentView] = useState<View>(getInitialView);
+  const [activeApp, setActiveApp] = useState<AppId>("claude");
+  const [currentView, setCurrentView] = useState<View>("providers");
   const [settingsDefaultTab, setSettingsDefaultTab] = useState("general");
   const [isAddOpen, setIsAddOpen] = useState(false);
 
-  useEffect(() => {
-    localStorage.setItem(VIEW_STORAGE_KEY, currentView);
-  }, [currentView]);
-
+  // Get settings for visibleApps
   const { data: settingsData } = useSettingsQuery();
   const visibleApps: VisibleApps = settingsData?.visibleApps ?? {
     claude: true,
@@ -125,6 +88,7 @@ function App() {
     opencode: true,
   };
 
+  // Get first visible app for fallback
   const getFirstVisibleApp = (): AppId => {
     if (visibleApps.claude) return "claude";
     if (visibleApps.codex) return "codex";
@@ -133,6 +97,7 @@ function App() {
     return "claude"; // fallback
   };
 
+  // If current active app is hidden, switch to first visible app
   useEffect(() => {
     if (!visibleApps[activeApp]) {
       setActiveApp(getFirstVisibleApp());
@@ -141,6 +106,7 @@ function App() {
 
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [usageProvider, setUsageProvider] = useState<Provider | null>(null);
+  // Confirm action state: 'remove' = remove from live config, 'delete' = delete from database
   const [confirmAction, setConfirmAction] = useState<{
     provider: Provider;
     action: "remove" | "delete";
@@ -148,6 +114,7 @@ function App() {
   const [envConflicts, setEnvConflicts] = useState<EnvConflict[]>([]);
   const [showEnvBanner, setShowEnvBanner] = useState(false);
 
+  // 使用 Hook 保存最后有效值，用于动画退出期间保持内容显示
   const effectiveEditingProvider = useLastValidValue(editingProvider);
   const effectiveUsageProvider = useLastValidValue(usageProvider);
 
@@ -158,12 +125,15 @@ function App() {
   const addActionButtonClass =
     "bg-orange-500 hover:bg-orange-600 dark:bg-orange-500 dark:hover:bg-orange-600 text-white shadow-lg shadow-orange-500/30 dark:shadow-orange-500/40 rounded-full w-8 h-8";
 
+  // 获取代理服务状态
   const {
     isRunning: isProxyRunning,
     takeoverStatus,
     status: proxyStatus,
   } = useProxyStatus();
+  // 当前应用的代理是否开启
   const isCurrentAppTakeoverActive = takeoverStatus?.[activeApp] || false;
+  // 当前应用代理实际使用的供应商 ID（从 active_targets 中获取）
   const activeProviderId = useMemo(() => {
     const target = proxyStatus?.active_targets?.find(
       (t) => t.app_type === activeApp,
@@ -171,6 +141,7 @@ function App() {
     return target?.provider_id;
   }, [proxyStatus?.active_targets, activeApp]);
 
+  // 获取供应商列表，当代理服务运行时自动刷新
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
     isProxyRunning,
   });
@@ -178,6 +149,7 @@ function App() {
   const currentProviderId = data?.currentProviderId ?? "";
   const hasSkillsSupport = true;
 
+  // 🎯 使用 useProviderActions Hook 统一管理所有 Provider 操作
   const {
     addProvider,
     updateProvider,
@@ -186,23 +158,7 @@ function App() {
     saveUsageScript,
   } = useProviderActions(activeApp);
 
-  const disableOmoMutation = useDisableCurrentOmo();
-  const handleDisableOmo = () => {
-    disableOmoMutation.mutate(undefined, {
-      onSuccess: () => {
-        toast.success(t("omo.disabled", { defaultValue: "OMO 已停用" }));
-      },
-      onError: (error: Error) => {
-        toast.error(
-          t("omo.disableFailed", {
-            defaultValue: "停用 OMO 失败: {{error}}",
-            error: extractErrorMessage(error),
-          }),
-        );
-      },
-    });
-  };
-
+  // 监听来自托盘菜单的切换事件
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
 
@@ -226,6 +182,7 @@ function App() {
     };
   }, [activeApp, refetch]);
 
+  // 监听统一供应商同步事件，刷新所有应用的供应商列表
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
 
@@ -233,7 +190,10 @@ function App() {
       try {
         const { listen } = await import("@tauri-apps/api/event");
         unsubscribe = await listen("universal-provider-synced", async () => {
+          // 统一供应商同步后刷新所有应用的供应商列表
+          // 使用 invalidateQueries 使所有 providers 查询失效
           await queryClient.invalidateQueries({ queryKey: ["providers"] });
+          // 同时更新托盘菜单
           try {
             await providersApi.updateTrayMenu();
           } catch (error) {
@@ -254,6 +214,7 @@ function App() {
     };
   }, [queryClient]);
 
+  // 应用启动时检测所有应用的环境变量冲突
   useEffect(() => {
     const checkEnvOnStartup = async () => {
       try {
@@ -278,6 +239,7 @@ function App() {
     checkEnvOnStartup();
   }, []);
 
+  // 应用启动时检查是否刚完成了配置迁移
   useEffect(() => {
     const checkMigration = async () => {
       try {
@@ -296,6 +258,7 @@ function App() {
     checkMigration();
   }, [t]);
 
+  // 应用启动时检查是否刚完成了 Skills 自动导入（统一管理 SSOT）
   useEffect(() => {
     const checkSkillsMigration = async () => {
       try {
@@ -324,12 +287,14 @@ function App() {
     checkSkillsMigration();
   }, [t, queryClient]);
 
+  // 切换应用时检测当前应用的环境变量冲突
   useEffect(() => {
     const checkEnvOnSwitch = async () => {
       try {
         const conflicts = await checkEnvConflicts(activeApp);
 
         if (conflicts.length > 0) {
+          // 合并新检测到的冲突
           setEnvConflicts((prev) => {
             const existingKeys = new Set(
               prev.map((c) => `${c.varName}:${c.sourcePath}`),
@@ -355,6 +320,7 @@ function App() {
     checkEnvOnSwitch();
   }, [activeApp]);
 
+  // 全局键盘快捷键
   const currentViewRef = useRef(currentView);
 
   useEffect(() => {
@@ -363,14 +329,17 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      // Cmd/Ctrl + , 打开设置
       if (event.key === "," && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
         setCurrentView("settings");
         return;
       }
 
+      // ESC 键返回
       if (event.key !== "Escape" || event.defaultPrevented) return;
 
+      // 如果有模态框打开（通过 overflow hidden 判断），则不处理全局 ESC，交给模态框处理
       if (document.body.style.overflow === "hidden") return;
 
       const view = currentViewRef.current;
@@ -388,6 +357,7 @@ function App() {
     };
   }, []);
 
+  // 打开网站链接
   const handleOpenWebsite = async (url: string) => {
     try {
       await settingsApi.openExternal(url);
@@ -401,17 +371,22 @@ function App() {
     }
   };
 
+  // 编辑供应商
   const handleEditProvider = async (provider: Provider) => {
     await updateProvider(provider);
     setEditingProvider(null);
   };
 
+  // 确认删除/移除供应商
   const handleConfirmAction = async () => {
     if (!confirmAction) return;
     const { provider, action } = confirmAction;
 
     if (action === "remove") {
+      // Remove from live config only (for additive mode apps like OpenCode)
+      // Does NOT delete from database - provider remains in the list
       await providersApi.removeFromLiveConfig(provider.id, activeApp);
+      // Invalidate queries to refresh the isInConfig state
       await queryClient.invalidateQueries({
         queryKey: ["opencodeLiveProviderIds"],
       });
@@ -422,11 +397,13 @@ function App() {
         { closeButton: true },
       );
     } else {
+      // Delete from database
       await deleteProvider(provider.id);
     }
     setConfirmAction(null);
   };
 
+  // Generate a unique provider key for OpenCode duplication
   const generateUniqueOpencodeKey = (
     originalKey: string,
     existingKeys: string[],
@@ -437,6 +414,7 @@ function App() {
       return baseKey;
     }
 
+    // If -copy already exists, try -copy-2, -copy-3, ...
     let counter = 2;
     while (existingKeys.includes(`${baseKey}-${counter}`)) {
       counter++;
@@ -444,7 +422,9 @@ function App() {
     return `${baseKey}-${counter}`;
   };
 
+  // 复制供应商
   const handleDuplicateProvider = async (provider: Provider) => {
+    // 1️⃣ 计算新的 sortIndex：如果原供应商有 sortIndex，则复制它
     const newSortIndex =
       provider.sortIndex !== undefined ? provider.sortIndex + 1 : undefined;
 
@@ -463,6 +443,7 @@ function App() {
       iconColor: provider.iconColor,
     };
 
+    // OpenCode: generate unique provider key (used as ID)
     if (activeApp === "opencode") {
       const existingKeys = Object.keys(providers);
       duplicatedProvider.providerKey = generateUniqueOpencodeKey(
@@ -471,6 +452,7 @@ function App() {
       );
     }
 
+    // 2️⃣ 如果原供应商有 sortIndex，需要将后续所有供应商的 sortIndex +1
     if (provider.sortIndex !== undefined) {
       const updates = Object.values(providers)
         .filter(
@@ -484,6 +466,7 @@ function App() {
           sortIndex: p.sortIndex! + 1,
         }));
 
+      // 先更新现有供应商的 sortIndex，为新供应商腾出位置
       if (updates.length > 0) {
         try {
           await providersApi.updateSortOrder(updates, activeApp);
@@ -499,12 +482,23 @@ function App() {
       }
     }
 
+    // 3️⃣ 添加复制的供应商
     await addProvider(duplicatedProvider);
   };
 
+  // 打开提供商终端
   const handleOpenTerminal = async (provider: Provider) => {
     try {
-      await providersApi.openTerminal(provider.id, activeApp);
+      // 先弹出目录选择对话框
+      const selectedDirectory = await settingsApi.selectConfigDirectory();
+
+      // 如果用户取消了目录选择，不启动终端
+      if (selectedDirectory === null) {
+        return;
+      }
+
+      // 启动终端并传入工作目录
+      await providersApi.openTerminal(provider.id, activeApp, selectedDirectory);
       toast.success(
         t("provider.terminalOpened", {
           defaultValue: "终端已打开",
@@ -521,8 +515,10 @@ function App() {
     }
   };
 
+  // 导入配置成功后刷新
   const handleImportSuccess = async () => {
     try {
+      // 导入会影响所有应用的供应商数据：刷新所有 providers 缓存
       await queryClient.invalidateQueries({
         queryKey: ["providers"],
         refetchType: "all",
@@ -594,12 +590,10 @@ function App() {
               <UniversalProviderPanel />
             </div>
           );
-
-        case "sessions":
-          return <SessionManagerPage />;
         default:
           return (
             <div className="px-6 flex flex-col h-[calc(100vh-8rem)] overflow-hidden">
+              {/* 独立滚动容器 - 解决 Linux/Ubuntu 下 DndContext 与滚轮事件冲突 */}
               <div className="flex-1 overflow-y-auto overflow-x-hidden pb-12 px-1">
                 <AnimatePresence mode="wait">
                   <motion.div
@@ -621,9 +615,7 @@ function App() {
                       }
                       activeProviderId={activeProviderId}
                       onSwitch={switchProvider}
-                      onEdit={(provider) => {
-                        setEditingProvider(provider);
-                      }}
+                      onEdit={setEditingProvider}
                       onDelete={(provider) =>
                         setConfirmAction({ provider, action: "delete" })
                       }
@@ -633,15 +625,10 @@ function App() {
                               setConfirmAction({ provider, action: "remove" })
                           : undefined
                       }
-                      onDisableOmo={
-                        activeApp === "opencode" ? handleDisableOmo : undefined
-                      }
                       onDuplicate={handleDuplicateProvider}
                       onConfigureUsage={setUsageProvider}
                       onOpenWebsite={handleOpenWebsite}
-                      onOpenTerminal={
-                        activeApp === "claude" ? handleOpenTerminal : undefined
-                      }
+                      onOpenTerminal={handleOpenTerminal}
                       onCreate={() => setIsAddOpen(true)}
                     />
                   </motion.div>
@@ -673,11 +660,13 @@ function App() {
       className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30"
       style={{ overflowX: "hidden", paddingTop: CONTENT_TOP_OFFSET }}
     >
+      {/* 全局拖拽区域（顶部 28px），避免上边框无法拖动 */}
       <div
         className="fixed top-0 left-0 right-0 z-[60]"
         data-tauri-drag-region
         style={{ WebkitAppRegion: "drag", height: DRAG_BAR_HEIGHT } as any}
       />
+      {/* 环境变量警告横幅 */}
       {showEnvBanner && envConflicts.length > 0 && (
         <EnvWarningBanner
           conflicts={envConflicts}
@@ -686,6 +675,7 @@ function App() {
             sessionStorage.setItem("env_banner_dismissed", "true");
           }}
           onDeleted={async () => {
+            // 删除后重新检测
             try {
               const allConflicts = await checkAllEnvConflicts();
               const flatConflicts = Object.values(allConflicts).flat();
@@ -751,25 +741,21 @@ function App() {
                     t("universalProvider.title", {
                       defaultValue: "统一供应商",
                     })}
-                  {currentView === "sessions" && t("sessionManager.title")}
                 </h1>
               </div>
             ) : (
               <div className="flex items-center gap-2">
                 <div className="relative inline-flex items-center">
-                  <a
-                    href="https://github.com/farion1231/cc-switch"
-                    target="_blank"
-                    rel="noreferrer"
+                  <span
                     className={cn(
-                      "text-xl font-semibold transition-colors",
+                      "text-xl font-semibold",
                       isProxyRunning && isCurrentAppTakeoverActive
-                        ? "text-emerald-500 hover:text-emerald-600 dark:text-emerald-400 dark:hover:text-emerald-300"
-                        : "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300",
+                        ? "text-emerald-500 dark:text-emerald-400"
+                        : "text-blue-500 dark:text-blue-400",
                     )}
                   >
-                    CC Switch
-                  </a>
+                    CLI Switch
+                  </span>
                 </div>
                 <Button
                   variant="ghost"
@@ -797,7 +783,7 @@ function App() {
                       setSettingsDefaultTab("usage");
                       setCurrentView("settings");
                     }}
-                    title={t("usage.title", {
+                    title={t("settings.usage.title", {
                       defaultValue: "使用统计",
                     })}
                     className="hover:bg-black/5 dark:hover:bg-white/5"
@@ -945,6 +931,18 @@ function App() {
                   >
                     <Wrench className="flex-shrink-0 w-4 h-4" />
                   </Button>
+                  {/* TODO: Agents 功能开发中，暂时隐藏入口 */}
+                  {/* {isClaudeApp && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setCurrentView("agents")}
+                        className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
+                        title="Agents"
+                      >
+                        <Bot className="w-4 h-4" />
+                      </Button>
+                    )} */}
                   <Button
                     variant="ghost"
                     size="sm"
@@ -953,15 +951,6 @@ function App() {
                     title={t("prompts.manage")}
                   >
                     <Book className="w-4 h-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setCurrentView("sessions")}
-                    className="text-muted-foreground hover:text-foreground hover:bg-black/5 dark:hover:bg-white/5"
-                    title={t("sessionManager.title")}
-                  >
-                    <History className="w-4 h-4" />
                   </Button>
                   <Button
                     variant="ghost"

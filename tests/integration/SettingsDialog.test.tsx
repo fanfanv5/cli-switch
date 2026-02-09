@@ -116,7 +116,7 @@ vi.mock("@/components/settings/ImportExportSection", () => ({
 }));
 
 vi.mock("@/components/settings/AboutSection", () => ({
-  AboutSection: ({ isPortable }: any) => <div>about:{String(isPortable)}</div>,
+  AboutSection: () => <div>about-section</div>,
 }));
 
 const renderDialog = (

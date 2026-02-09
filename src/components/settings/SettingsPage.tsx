@@ -37,6 +37,7 @@ import { WindowSettings } from "@/components/settings/WindowSettings";
 import { AppVisibilitySettings } from "@/components/settings/AppVisibilitySettings";
 import { SkillSyncMethodSettings } from "@/components/settings/SkillSyncMethodSettings";
 import { TerminalSettings } from "@/components/settings/TerminalSettings";
+import { ContextMenuSettings } from "@/components/settings/ContextMenuSettings";
 import { DirectorySettings } from "@/components/settings/DirectorySettings";
 import { ImportExportSection } from "@/components/settings/ImportExportSection";
 import { AboutSection } from "@/components/settings/AboutSection";
@@ -75,7 +76,7 @@ export function SettingsPage({
     settings,
     isLoading,
     isSaving,
-    isPortable,
+    isPortable: _isPortable,
     appConfigDir,
     resolvedDirs,
     updateSettings,
@@ -264,6 +265,7 @@ export function SettingsPage({
                         handleAutoSave({ preferredTerminal: terminal })
                       }
                     />
+                    <ContextMenuSettings />
                   </motion.div>
                 ) : null}
               </TabsContent>
@@ -625,7 +627,7 @@ export function SettingsPage({
               </TabsContent>
 
               <TabsContent value="about" className="mt-0">
-                <AboutSection isPortable={isPortable} />
+                <AboutSection />
               </TabsContent>
 
               <TabsContent value="usage" className="mt-0">

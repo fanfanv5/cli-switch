@@ -7,11 +7,21 @@
   ],
   "permissions": [
     "core:default",
+    "core:app:default",
+    "core:event:default",
+    "core:image:default",
+    "core:menu:default",
+    "core:path:default",
+    "core:resources:default",
+    "core:tray:default",
+    "core:webview:default",
+    "core:window:default",
     "opener:default",
-    "updater:default",
-    "core:window:allow-set-skip-taskbar",
-    "core:window:allow-start-dragging",
+    "deep-link:default",
+    "log:default",
+    "process:default",
     "process:allow-restart",
-    "dialog:default"
+    "dialog:default",
+    "store:default"
   ]
 }
