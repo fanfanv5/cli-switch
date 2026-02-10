@@ -66,8 +66,9 @@ type View =
   | "universal";
 
 // macOS Overlay mode needs space for traffic light buttons, Windows/Linux use native titlebar
-const DRAG_BAR_HEIGHT = isWindows() || isLinux() ? 0 : 28; // px
-const HEADER_HEIGHT = 64; // px
+// Standard titlebar mode: no drag bar needed, header starts from top
+const DRAG_BAR_HEIGHT = 0; // px - using system titlebar now
+const HEADER_HEIGHT = 56; // px - slightly shorter for system titlebar
 const CONTENT_TOP_OFFSET = DRAG_BAR_HEIGHT + HEADER_HEIGHT;
 
 function App() {
@@ -660,12 +661,7 @@ function App() {
       className="flex flex-col h-screen overflow-hidden bg-background text-foreground selection:bg-primary/30"
       style={{ overflowX: "hidden", paddingTop: CONTENT_TOP_OFFSET }}
     >
-      {/* 全局拖拽区域（顶部 28px），避免上边框无法拖动 */}
-      <div
-        className="fixed top-0 left-0 right-0 z-[60]"
-        data-tauri-drag-region
-        style={{ WebkitAppRegion: "drag", height: DRAG_BAR_HEIGHT } as any}
-      />
+      {/* 不再需要自定义拖拽区域，使用系统标题栏 */}
       {/* 环境变量警告横幅 */}
       {showEnvBanner && envConflicts.length > 0 && (
         <EnvWarningBanner
@@ -695,24 +691,15 @@ function App() {
 
       <header
         className="fixed z-50 w-full transition-all duration-300 bg-background/80 backdrop-blur-md"
-        data-tauri-drag-region
         style={
           {
-            WebkitAppRegion: "drag",
             top: DRAG_BAR_HEIGHT,
             height: HEADER_HEIGHT,
           } as any
         }
       >
-        <div
-          className="flex h-full items-center justify-between gap-2 px-6"
-          data-tauri-drag-region
-          style={{ WebkitAppRegion: "drag" } as any}
-        >
-          <div
-            className="flex items-center gap-1"
-            style={{ WebkitAppRegion: "no-drag" } as any}
-          >
+        <div className="flex h-full items-center justify-between gap-2 px-6">
+          <div className="flex items-center gap-1">
             {currentView !== "providers" ? (
               <div className="flex items-center gap-2">
                 <Button
@@ -795,10 +782,7 @@ function App() {
             )}
           </div>
 
-          <div
-            className="flex items-center gap-1.5 h-[32px]"
-            style={{ WebkitAppRegion: "no-drag" } as any}
-          >
+          <div className="flex items-center gap-1.5 h-[32px]">
             {currentView === "prompts" && (
               <Button
                 variant="ghost"

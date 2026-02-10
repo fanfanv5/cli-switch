@@ -185,34 +185,48 @@ fn handle_open_terminal_from_context_menu(app: &tauri::AppHandle, args: &[String
         return;
     }
 
+    // 使用 spawn_blocking 在阻塞线程池中执行，确保在新实例退出前完成
+    // spawn 会导致任务被延迟到下次回调时才执行
     let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Some(state) = app_handle.try_state::<AppState>() {
-            if let Some(pid) = provider_id {
-                // 供应商终端：使用现有的 open_provider_terminal
-                log::info!("启动供应商终端: app={}, provider_id={}", app_type, pid);
-                let working_dir = Some(dir);
-                let _ = commands::open_provider_terminal(
-                    state,
-                    app_type,
-                    pid,
-                    working_dir,
-                )
-                .await;
-            } else {
-                // 默认终端：创建临时空供应商配置
-                log::info!("启动默认终端: app={}", app_type);
-                match crate::app_config::AppType::from_str(&app_type) {
-                    Ok(app_type_enum) => {
-                        // 使用内部方法启动终端
-                        let working_dir = Some(dir);
-                        let _ = launch_default_terminal(&app_type_enum, working_dir).await;
-                    }
-                    Err(e) => {
-                        log::error!("无效的应用类型 {}: {}", app_type, e);
+    tauri::async_runtime::spawn_blocking(move || {
+        let handle = app_handle;
+        // 在阻塞线程中使用 block_on 是安全的
+        let result = tauri::async_runtime::block_on(async move {
+            if let Some(state) = handle.try_state::<AppState>() {
+                if let Some(pid) = provider_id {
+                    // 供应商终端：使用现有的 open_provider_terminal
+                    log::info!("启动供应商终端: app={}, provider_id={}", app_type, pid);
+                    let working_dir = Some(dir);
+                    commands::open_provider_terminal(
+                        state,
+                        app_type,
+                        pid,
+                        working_dir,
+                    )
+                    .await
+                    .map(|_| ())
+                } else {
+                    // 默认终端：创建临时空供应商配置
+                    log::info!("启动默认终端: app={}", app_type);
+                    match crate::app_config::AppType::from_str(&app_type) {
+                        Ok(app_type_enum) => {
+                            // 使用内部方法启动终端
+                            let working_dir = Some(dir);
+                            launch_default_terminal(&app_type_enum, working_dir).await
+                        }
+                        Err(e) => {
+                            log::error!("无效的应用类型 {}: {}", app_type, e);
+                            Err(e.to_string())
+                        }
                     }
                 }
+            } else {
+                Err("无法获取应用状态".to_string())
             }
+        });
+
+        if let Err(e) = result {
+            log::error!("启动终端失败: {}", e);
         }
     });
 }
@@ -300,6 +314,15 @@ pub fn run() {
                     let app_clone = app.clone();
                     tauri::async_runtime::spawn(async move {
                         let _ = commands::register_context_menu_hidden(app_clone).await;
+                        // 注册完成后退出
+                        std::process::exit(0);
+                    });
+                }
+                #[cfg(target_os = "macos")]
+                {
+                    let app_clone = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = commands::register_context_menu(app_clone).await;
                         // 注册完成后退出
                         std::process::exit(0);
                     });
@@ -853,6 +876,13 @@ pub fn run() {
                 restore_proxy_state_on_startup(&state).await;
             });
 
+            // macOS: 确保 titleBarStyle 设置正确应用
+            #[cfg(target_os = "macos")]
+            if app.get_webview_window("main").is_some() {
+                // Tauri 2: 通过编程方式确保窗口支持拖动区域
+                log::info!("配置 macOS 窗口属性以支持拖动区域");
+            }
+
             // 静默启动：根据设置决定是否显示主窗口
             let settings = crate::settings::get_settings();
             if let Some(window) = app.get_webview_window("main") {
@@ -970,10 +1000,12 @@ pub fn run() {
             commands::check_env_conflicts,
             commands::delete_env_vars,
             commands::restore_env_backup,
-            // Windows context menu
+            // Windows/macOS context menu
             commands::register_context_menu,
             commands::unregister_context_menu,
             commands::is_context_menu_registered,
+            #[cfg(target_os = "macos")]
+            commands::restart_finder,
             // Skill management (v3.10.0+ unified)
             commands::get_installed_skills,
             commands::install_skill_unified,

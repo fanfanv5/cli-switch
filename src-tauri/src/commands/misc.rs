@@ -152,6 +152,7 @@ async fn fetch_npm_latest_version(client: &reqwest::Client, package: &str) -> Op
     }
 }
 
+#[allow(dead_code)]
 /// Helper function to fetch latest version from GitHub releases
 async fn fetch_github_latest_version(client: &reqwest::Client, repo: &str) -> Option<String> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
@@ -564,10 +565,66 @@ pub async fn install_cli_tool(
 
         #[cfg(not(target_os = "windows"))]
         {
-            std::process::Command::new("sh")
+            let npm_cmd = if matches!(action, CliToolAction::Upgrade) {
+                format!(r#"npm install -g --force {}@latest"#, package)
+            } else {
+                format!(r#"npm install -g --force {}"#, package)
+            };
+            log::info!("[CLI安装] 执行命令: {}", npm_cmd);
+
+            // 先尝试使用 sudo（如果已授权，5分钟内有效）
+            let sudo_npm_cmd = format!(r#"cd /tmp && sudo -n {}"#, npm_cmd);
+            let output_with_sudo = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(&cmd_str)
+                .arg(&sudo_npm_cmd)
                 .output()
+                .map_err(|_| ());
+
+            // 检查 sudo 是否需要密码
+            let use_cached_auth = match &output_with_sudo {
+                Ok(out) => out.status.success(),
+                Err(_) => false,
+            };
+
+            if use_cached_auth {
+                log::info!("[CLI安装] 使用缓存的 sudo 授权");
+                output_with_sudo.map_err(|_| "执行 npm 命令失败".to_string())
+            } else {
+                // 尝试不使用 sudo
+                let output_no_sudo = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&npm_cmd)
+                    .output()
+                    .map_err(|_| ());
+
+                match output_no_sudo {
+                    Ok(out) if out.status.success() => {
+                        log::info!("[CLI安装] 无需授权即可完成");
+                        Ok(out)
+                    }
+                    _ => {
+                        // 权限不足，使用 macOS 授权，并延长 sudo 时间戳
+                        log::info!("[CLI安装] 权限不足，使用系统授权");
+
+                        // 先执行 sudo -v 延长授权时间（5分钟），然后再执行实际命令
+                        let full_cmd = format!(r#"cd /tmp && sudo -v && {}"#, npm_cmd);
+
+                        // 转义引号和反斜杠以便在 AppleScript 中使用
+                        let escaped_cmd = full_cmd.replace('"', r#"\""#).replace('\\', r#"\\"#);
+
+                        let apple_script = format!(
+                            r#"do shell script "{}" with administrator privileges"#,
+                            escaped_cmd
+                        );
+
+                        std::process::Command::new("osascript")
+                            .arg("-e")
+                            .arg(&apple_script)
+                            .output()
+                            .map_err(|_| "执行授权命令失败".to_string())
+                    }
+                }
+            }
         }
     };
 
@@ -864,9 +921,9 @@ exec {launch_command}
         cd_command = cd_command,
         launch_command = launch_command,
         cleanup = if cleanup_command.is_empty() {
-            ""
+            String::new()
         } else {
-            &format!(r#"; "{}""#, cleanup_command)
+            format!(r#"; "{}""#, cleanup_command)
         },
         script_file = script_file.display()
     );
@@ -1069,9 +1126,9 @@ exec {launch_command}
         cd_command = cd_command,
         launch_command = launch_command,
         cleanup = if cleanup_command.is_empty() {
-            ""
+            String::new()
         } else {
-            &format!(r#"; "{}""#, cleanup_command)
+            format!(r#"; "{}""#, cleanup_command)
         },
         script_file = script_file.display()
     );

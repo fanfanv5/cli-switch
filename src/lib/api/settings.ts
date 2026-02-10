@@ -173,6 +173,10 @@ export const settingsApi = {
   async isContextMenuRegistered(): Promise<boolean> {
     return await invoke('is_context_menu_registered');
   },
+
+  async restartFinder(): Promise<void> {
+    return await invoke('restart_finder');
+  },
 };
 
 export interface RectifierConfig {

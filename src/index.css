@@ -128,11 +128,13 @@
 /* Tauri 拖拽区域 */
 [data-tauri-drag-region] {
   -webkit-app-region: drag;
+  app-region: drag;
 }
 
 [data-tauri-no-drag],
 [data-tauri-drag-region] .no-drag {
   -webkit-app-region: no-drag;
+  app-region: no-drag;
 }
 
 /* 全局基础样式 */

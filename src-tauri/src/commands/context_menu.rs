@@ -1,6 +1,8 @@
 //! Windows 文件夹右键菜单集成
 //!
 //! 在 Windows 资源管理器的文件夹右键菜单中添加"打开 CLI 终端"选项
+//! 在 macOS Finder 的文件夹右键菜单中添加"打开 CLI 终端"选项
+//!
 //! 支持两种模式：
 //! 1. 默认终端：不带供应商配置，直接启动 CLI
 //! 2. 供应商终端：使用特定供应商配置启动 CLI
@@ -12,6 +14,11 @@ use winreg::RegKey;
 #[cfg(target_os = "windows")]
 use crate::store::AppState;
 #[cfg(target_os = "windows")]
+use tauri::Manager;
+
+#[cfg(target_os = "macos")]
+use crate::store::AppState;
+#[cfg(target_os = "macos")]
 use tauri::Manager;
 
 /// 检查当前进程是否以管理员身份运行
@@ -530,22 +537,544 @@ pub async fn is_context_menu_registered() -> Result<bool, String> {
 }
 
 // 非 Windows 平台的空实现
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[tauri::command]
 pub async fn register_context_menu(
     _app: tauri::AppHandle,
 ) -> Result<(), String> {
-    Err("右键菜单功能仅支持 Windows 平台".to_string())
+    Err("右键菜单功能仅支持 Windows 和 macOS 平台".to_string())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[tauri::command]
 pub async fn unregister_context_menu() -> Result<(), String> {
-    Err("右键菜单功能仅支持 Windows 平台".to_string())
+    Err("右键菜单功能仅支持 Windows 和 macOS 平台".to_string())
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
 #[tauri::command]
 pub async fn is_context_menu_registered() -> Result<bool, String> {
     Ok(false)
+}
+
+// ============================================================================
+// macOS Services 实现
+// ============================================================================
+
+/// macOS Services 安装目录
+#[cfg(target_os = "macos")]
+const SERVICES_DIR: &str = "Library/Services";
+
+/// 获取 Services 目录路径
+#[cfg(target_os = "macos")]
+fn get_services_dir() -> Result<std::path::PathBuf, String> {
+    let home_dir = std::env::var("HOME")
+        .map_err(|_| "无法获取用户主目录".to_string())?;
+    Ok(std::path::PathBuf::from(home_dir).join(SERVICES_DIR))
+}
+
+/// 创建 macOS Automator 工作流 (.workflow)
+/// 工作流接收文件夹作为输入，运行 shell 脚本打开终端
+#[cfg(target_os = "macos")]
+fn create_workflow(
+    display_name: &str,
+    app_type: &str,
+    provider_id: Option<&str>,
+    exe_path: &std::path::Path,
+) -> Result<(), String> {
+    use std::io::Write;
+    use std::fs;
+
+    let services_dir = get_services_dir()?;
+    fs::create_dir_all(&services_dir)
+        .map_err(|e| format!("创建 Services 目录失败: {}", e))?;
+
+    // 使用显示名称作为 workflow 文件名（替换特殊字符）
+    let safe_name = display_name.replace('/', "-").replace(':', "-");
+    let workflow_name = format!("{}.workflow", safe_name);
+    let workflow_path = services_dir.join(&workflow_name);
+
+    // 删除已存在的工作流
+    if workflow_path.exists() {
+        fs::remove_dir_all(&workflow_path)
+            .map_err(|e| format!("删除旧工作流失败: {}", e))?;
+    }
+
+    // 创建工作流目录结构
+    let contents_dir = workflow_path.join("Contents");
+    fs::create_dir_all(&contents_dir)
+        .map_err(|e| format!("创建 Contents 目录失败: {}", e))?;
+
+    // 创建 Info.plist - 使用 display_name 作为菜单项名称
+    let menu_title = display_name;
+    let info_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>{}</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>runWorkflowAsService</string>
+            <key>NSRequiredContext</key>
+            <dict>
+                <key>NSApplicationIdentifier</key>
+                <string>com.apple.finder</string>
+            </dict>
+            <key>NSSendFileTypes</key>
+            <array>
+                <string>public.folder</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>"#, menu_title);
+
+    let info_path = contents_dir.join("Info.plist");
+    let mut file = fs::File::create(&info_path)
+        .map_err(|e| format!("创建 Info.plist 失败: {}", e))?;
+    file.write_all(info_plist.as_bytes())
+        .map_err(|e| format!("写入 Info.plist 失败: {}", e))?;
+
+    // 创建 QuickLook 目录
+    let ql_dir = contents_dir.join("QuickLook");
+    fs::create_dir_all(&ql_dir)
+        .map_err(|e| format!("创建 QuickLook 目录失败: {}", e))?;
+
+    // 创建 Thumbnail.png（空文件）
+    let thumbnail_path = ql_dir.join("Thumbnail.png");
+    let _ = fs::File::create(&thumbnail_path);
+
+    // 创建 document.wflow
+    let exe_str = exe_path.to_string_lossy();
+    let provider_arg = provider_id
+        .map(|p| format!("--provider-id \"{}\"", p))
+        .unwrap_or_default();
+
+    // shell 脚本：处理输入的文件夹路径
+    let shell_script = format!(r#"
+for f in "$@"
+do
+    if [ -d "$f" ]; then
+        "{}" --open-terminal --app {} --dir "$f" {}
+    fi
+done
+"#, exe_str, app_type, provider_arg);
+
+    // 创建 document.wflow (Automator 工作流定义)
+    // 使用 GitHub 上经过验证的 workflow 格式
+    let workflow_plist = format!(r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>AMApplicationBuild</key>
+    <string>524</string>
+    <key>AMApplicationVersion</key>
+    <string>2.10</string>
+    <key>AMDocumentVersion</key>
+    <string>2</string>
+    <key>actions</key>
+    <array>
+        <dict>
+            <key>action</key>
+            <dict>
+                <key>AMAccepts</key>
+                <dict>
+                    <key>Container</key>
+                    <string>List</string>
+                    <key>Optional</key>
+                    <true/>
+                    <key>Types</key>
+                    <array>
+                        <string>com.apple.cocoa.path</string>
+                    </array>
+                </dict>
+                <key>AMActionVersion</key>
+                <string>2.0.3</string>
+                <key>AMApplication</key>
+                <array>
+                    <string>Automator</string>
+                </array>
+                <key>AMParameterProperties</key>
+                <dict>
+                    <key>COMMAND_STRING</key>
+                    <dict/>
+                    <key>CheckedForUserDefaultShell</key>
+                    <dict/>
+                    <key>inputMethod</key>
+                    <dict/>
+                    <key>shell</key>
+                    <dict/>
+                    <key>source</key>
+                    <dict/>
+                </dict>
+                <key>AMProvides</key>
+                <dict>
+                    <key>Container</key>
+                    <string>List</string>
+                    <key>Types</key>
+                    <array>
+                        <string>com.apple.cocoa.path</string>
+                    </array>
+                </dict>
+                <key>ActionBundlePath</key>
+                <string>/System/Library/Automator/Run Shell Script.action</string>
+                <key>ActionName</key>
+                <string>Run Shell Script</string>
+                <key>ActionParameters</key>
+                <dict>
+                    <key>COMMAND_STRING</key>
+                    <string>{}</string>
+                    <key>CheckedForUserDefaultShell</key>
+                    <true/>
+                    <key>inputMethod</key>
+                    <integer>1</integer>
+                    <key>shell</key>
+                    <string>/bin/bash</string>
+                    <key>source</key>
+                    <string></string>
+                </dict>
+                <key>BundleIdentifier</key>
+                <string>com.apple.RunShellScript</string>
+                <key>CFBundleVersion</key>
+                <string>2.0.3</string>
+                <key>CanShowSelectedItemsWhenRun</key>
+                <false/>
+                <key>CanShowWhenRun</key>
+                <true/>
+                <key>Category</key>
+                <array>
+                    <string>AMCategoryUtilities</string>
+                </array>
+                <key>Class Name</key>
+                <string>RunShellScriptAction</string>
+                <key>InputUUID</key>
+                <string>D4923642-5E5A-4B0F-9A4E-3B3E8C4E8F8A</string>
+                <key>Keywords</key>
+                <array>
+                    <string>Shell</string>
+                    <string>Script</string>
+                    <string>Command</string>
+                    <string>Run</string>
+                    <string>Unix</string>
+                </array>
+                <key>OutputUUID</key>
+                <string>BCFC1B93-6F69-4B2B-A0E5-69D4A437E32B</string>
+                <key>UUID</key>
+                <string>E58C2CBD-0317-4098-8B95-5130DC14459B</string>
+                <key>UnlocalizedApplications</key>
+                <array>
+                    <string>Automator</string>
+                </array>
+                <key>arguments</key>
+                <dict>
+                    <key>0</key>
+                    <dict>
+                        <key>default value</key>
+                        <integer>0</integer>
+                        <key>name</key>
+                        <string>inputMethod</string>
+                        <key>required</key>
+                        <string>0</string>
+                        <key>type</key>
+                        <string>0</string>
+                        <key>uid</key>
+                        <string>0</string>
+                    </dict>
+                    <key>1</key>
+                    <dict>
+                        <key>default value</key>
+                        <true/>
+                        <key>name</key>
+                        <string>CheckedForUserDefaultShell</string>
+                        <key>required</key>
+                        <string>0</string>
+                        <key>type</key>
+                        <string>0</string>
+                        <key>uid</key>
+                        <string>1</string>
+                    </dict>
+                    <key>2</key>
+                    <dict>
+                        <key>default value</key>
+                        <string></string>
+                        <key>name</key>
+                        <string>source</string>
+                        <key>required</key>
+                        <string>0</string>
+                        <key>type</key>
+                        <string>0</string>
+                        <key>uid</key>
+                        <string>2</string>
+                    </dict>
+                    <key>3</key>
+                    <dict>
+                        <key>default value</key>
+                        <string></string>
+                        <key>name</key>
+                        <string>COMMAND_STRING</string>
+                        <key>required</key>
+                        <string>0</string>
+                        <key>type</key>
+                        <string>0</string>
+                        <key>uid</key>
+                        <string>3</string>
+                    </dict>
+                    <key>4</key>
+                    <dict>
+                        <key>default value</key>
+                        <string>/bin/sh</string>
+                        <key>name</key>
+                        <string>shell</string>
+                        <key>required</key>
+                        <string>0</string>
+                        <key>type</key>
+                        <string>0</string>
+                        <key>uid</key>
+                        <string>4</string>
+                    </dict>
+                </dict>
+                <key>isViewVisible</key>
+                <integer>1</integer>
+                <key>location</key>
+                <string>309.000000:305.000000</string>
+                <key>nibPath</key>
+                <string>/System/Library/Automator/Run Shell Script.action/Contents/Resources/Base.lproj/main.nib</string>
+            </dict>
+            <key>isViewVisible</key>
+            <integer>1</integer>
+        </dict>
+    </array>
+    <key>connectors</key>
+    <dict/>
+    <key>workflowMetaData</key>
+    <dict>
+        <key>applicationBundleID</key>
+        <string>com.apple.finder</string>
+        <key>applicationBundleIDsByPath</key>
+        <dict>
+            <key>/System/Library/CoreServices/Finder.app</key>
+            <string>com.apple.finder</string>
+        </dict>
+        <key>applicationPath</key>
+        <string>/System/Library/CoreServices/Finder.app</string>
+        <key>applicationPaths</key>
+        <array>
+            <string>/System/Library/CoreServices/Finder.app</string>
+        </array>
+        <key>inputTypeIdentifier</key>
+        <string>com.apple.Automator.fileSystemObject.folder</string>
+        <key>outputTypeIdentifier</key>
+        <string>com.apple.Automator.nothing</string>
+        <key>presentationMode</key>
+        <integer>15</integer>
+        <key>processesInput</key>
+        <integer>0</integer>
+        <key>serviceApplicationBundleID</key>
+        <string>com.apple.finder</string>
+        <key>serviceApplicationPath</key>
+        <string>/System/Library/CoreServices/Finder.app</string>
+        <key>serviceInputTypeIdentifier</key>
+        <string>com.apple.Automator.fileSystemObject.folder</string>
+        <key>serviceOutputTypeIdentifier</key>
+        <string>com.apple.Automator.nothing</string>
+        <key>serviceProcessesInput</key>
+        <integer>0</integer>
+        <key>systemImageName</key>
+        <string>NSTouchBarDocuments</string>
+        <key>useAutomaticInputType</key>
+        <integer>0</integer>
+        <key>workflowTypeIdentifier</key>
+        <string>com.apple.Automator.servicesMenu</string>
+    </dict>
+</dict>
+</plist>"#, shell_script.replace('\n', "&#10;").replace('"', "&quot;"));
+
+    let doc_path = contents_dir.join("document.wflow");
+    let mut file = fs::File::create(&doc_path)
+        .map_err(|e| format!("创建 document.wflow 失败: {}", e))?;
+    file.write_all(workflow_plist.as_bytes())
+        .map_err(|e| format!("写入 document.wflow 失败: {}", e))?;
+
+    log::info!("创建工作流: {}", workflow_path.display());
+    Ok(())
+}
+
+/// 注册 macOS 文件夹右键菜单（Services）
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn register_context_menu(
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("获取 exe 路径失败: {}", e))?;
+
+    log::info!("开始注册 macOS Services，exe 路径: {}", exe_path.display());
+
+    let state = app
+        .try_state::<AppState>()
+        .ok_or("无法获取应用状态")?;
+
+    // 获取所有 Claude 供应商
+    let providers = state
+        .db
+        .get_all_providers("claude")
+        .map_err(|e| format!("获取 Claude 供应商列表失败: {}", e))?;
+
+    // 为每个 Claude 供应商创建服务
+    for (provider_id, provider) in providers {
+        let display_name = if let Some(notes) = &provider.notes {
+            format!("Open Claude - {} - {}", provider.name, notes)
+        } else {
+            format!("Open Claude - {}", provider.name)
+        };
+        create_workflow(&display_name, "claude", Some(&provider_id), &exe_path)?;
+    }
+
+    // 为 Codex/Gemini/OpenCode 创建服务
+    for app_type in ["codex", "gemini", "opencode"] {
+        let display_name = format!("Open {} Terminal", capitalize(app_type));
+        create_workflow(&display_name, app_type, None, &exe_path)?;
+    }
+
+    // 重新加载 Services
+    reload_services()?;
+
+    log::info!("macOS Services 注册成功");
+    Ok(())
+}
+
+/// 注销 macOS 文件夹右键菜单
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn unregister_context_menu() -> Result<(), String> {
+    log::info!("开始注销 macOS Services");
+
+    let services_dir = get_services_dir()?;
+
+    // 查找并删除所有 CCSwitch 相关的工作流
+    let entries = std::fs::read_dir(&services_dir)
+        .map_err(|e| format!("读取 Services 目录失败: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if name_str.ends_with(".workflow") &&
+           (name_str.starts_with("Open Claude") ||
+            name_str.starts_with("Open Codex Terminal") ||
+            name_str.starts_with("Open Gemini Terminal") ||
+            name_str.starts_with("Open OpenCode Terminal") ||
+            name_str.starts_with("CCSwitch")) {
+            let path = entry.path();
+            std::fs::remove_dir_all(&path)
+                .map_err(|e| format!("删除工作流失败 [{}]: {}", name_str, e))?;
+            log::info!("已删除工作流: {}", name_str);
+        }
+    }
+
+    // 重新加载 Services
+    reload_services()?;
+
+    log::info!("macOS Services 注销成功");
+    Ok(())
+}
+
+/// 检查 macOS Services 是否已注册
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn is_context_menu_registered() -> Result<bool, String> {
+    let services_dir = get_services_dir()?;
+
+    if !services_dir.exists() {
+        return Ok(false);
+    }
+
+    let entries = std::fs::read_dir(&services_dir)
+        .map_err(|e| format!("读取 Services 目录失败: {}", e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        // 检查是否是我们创建的 workflow 文件
+        // 新格式: "Open Claude - xxx.workflow", "Open Codex Terminal.workflow" 等
+        if name_str.ends_with(".workflow") &&
+           (name_str.starts_with("Open Claude") ||
+            name_str.starts_with("Open Codex Terminal") ||
+            name_str.starts_with("Open Gemini Terminal") ||
+            name_str.starts_with("Open OpenCode Terminal") ||
+            name_str.starts_with("CCSwitch")) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// 重新加载 macOS Services（使用 killall 通知系统）
+#[cfg(target_os = "macos")]
+fn reload_services() -> Result<(), String> {
+    log::info!("重新加载 macOS Services");
+
+    // 使用 killall 通知系统重新加载 Services
+    let _ = std::process::Command::new("killall")
+        .args(["SystemUIServer", "-9"])
+        .output();
+
+    // 等待系统恢复
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    Ok(())
+}
+
+/// 重启 Finder（macOS）
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn restart_finder() -> Result<(), String> {
+    log::info!("重启 Finder");
+
+    // 先刷新 Services 缓存
+    let _ = std::process::Command::new("/System/Library/CoreServices/pbs")
+        .arg("-flush")
+        .output();
+
+    // 重启 Finder
+    let output = std::process::Command::new("killall")
+        .args(["Finder"])
+        .output();
+
+    match output {
+        Ok(out) => {
+            if out.status.success() {
+                log::info!("Finder 已重启");
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Err(format!("Finder 重启失败: {}", stderr))
+            }
+        }
+        Err(e) => {
+            // Finder 可能没有运行，这也是可以的
+            log::info!("Finder 未运行或已关闭: {}", e);
+            Ok(())
+        }
+    }
+}
+
+/// 首字母大写
+#[cfg(target_os = "macos")]
+fn capitalize(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }

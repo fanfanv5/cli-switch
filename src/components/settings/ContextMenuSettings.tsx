@@ -3,14 +3,14 @@ import { Button } from "@/components/ui/button";
 import { Loader2, Check, Trash2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { settingsApi } from "@/lib/api";
-import { isWindows } from "@/lib/platform";
+import { isWindows, isMac } from "@/lib/platform";
 
 export interface ContextMenuSettingsProps {
   onProvidersChange?: () => void;
 }
 
 /**
- * Windows 文件夹右键菜单设置组件
+ * Windows/macOS 文件夹右键菜单设置组件
  *
  * 功能：
  * - 注册/注销右键菜单
@@ -33,7 +33,7 @@ export function ContextMenuSettings({
       setIsRegistered(registered);
     } catch (error) {
       console.error("检查右键菜单状态失败:", error);
-      // 非Windows平台会返回错误，这是正常的
+      // 非支持平台会返回错误，这是正常的
       setIsRegistered(false);
     } finally {
       setIsLoading(false);
@@ -41,7 +41,7 @@ export function ContextMenuSettings({
   };
 
   useEffect(() => {
-    if (isWindows()) {
+    if (isWindows() || isMac()) {
       checkRegistrationStatus();
     }
   }, []);
@@ -93,6 +93,19 @@ export function ContextMenuSettings({
     checkRegistrationStatus();
   };
 
+  // 重启 Finder（仅 macOS）
+  const handleRestartFinder = async () => {
+    try {
+      await settingsApi.restartFinder();
+      toast.success("访达已重启，请重新检查右键菜单");
+      // 等待后重新检查状态
+      setTimeout(() => checkRegistrationStatus(), 2000);
+    } catch (error) {
+      console.error("重启访达失败:", error);
+      toast.error(`重启失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
   // 当供应商列表变更时，如果已注册则自动重新注册
   useEffect(() => {
     if (isRegistered === true && onProvidersChange) {
@@ -103,8 +116,8 @@ export function ContextMenuSettings({
     }
   }, [onProvidersChange]);
 
-  // 非 Windows 平台不显示
-  if (!isWindows()) {
+  // 非 Windows/macOS 平台不显示
+  if (!isWindows() && !isMac()) {
     return null;
   }
 
@@ -147,22 +160,42 @@ export function ContextMenuSettings({
               <RefreshCw className="w-4 h-4 mr-2" />
               刷新
             </Button>
+            {isMac() && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRestartFinder}
+              >
+                重启访达
+              </Button>
+            )}
             <div className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
               <Check className="w-3 h-3" />
               <span>已注册</span>
             </div>
           </>
         ) : (
-          <Button
-            size="sm"
-            onClick={handleRegister}
-            disabled={isRegistering}
-          >
-            {isRegistering ? (
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : null}
-            注册
-          </Button>
+          <>
+            <Button
+              size="sm"
+              onClick={handleRegister}
+              disabled={isRegistering}
+            >
+              {isRegistering ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : null}
+              注册
+            </Button>
+            {isMac() && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRestartFinder}
+              >
+                重启访达
+              </Button>
+            )}
+          </>
         )}
       </div>
 
