@@ -98,7 +98,14 @@ pub async fn get_tool_versions() -> Result<Vec<ToolVersion>, String> {
     for tool in tools {
         // 1. 获取本地版本
         let (local_version, local_error) = if tool == "nodejs" {
-            try_get_nodejs_version()
+            // 先尝试直接执行
+            let direct_result = try_get_nodejs_version();
+            if direct_result.0.is_some() {
+                direct_result
+            } else {
+                // 扫描常见的 node 安装路径
+                scan_nodejs_version()
+            }
         } else if let Some(distro) = wsl_distro_for_tool(tool) {
             try_get_version_wsl(tool, &distro)
         } else {
@@ -420,6 +427,117 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
             #[cfg(not(target_os = "windows"))]
             let output = {
                 Command::new(&tool_path)
+                    .arg("--version")
+                    .env("PATH", &new_path)
+                    .output()
+            };
+
+            if let Ok(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                if out.status.success() {
+                    let raw = if stdout.is_empty() { &stderr } else { &stdout };
+                    if !raw.is_empty() {
+                        return (Some(extract_version(raw)), None);
+                    }
+                }
+            }
+        }
+    }
+
+    (None, Some("not installed or not executable".to_string()))
+}
+
+/// 扫描常见路径查找 Node.js
+/// 用于解决 macOS GUI 应用 PATH 环境变量不包含用户安装的 node 路径的问题
+fn scan_nodejs_version() -> (Option<String>, Option<String>) {
+    use std::process::Command;
+
+    let home = dirs::home_dir().unwrap_or_default();
+
+    // 常见的 node 安装路径
+    let mut search_paths: Vec<std::path::PathBuf> = vec![
+        home.join(".local/bin"),
+        home.join(".npm-global/bin"),
+        home.join("n/bin"), // n version manager
+    ];
+
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from("/opt/homebrew/bin")); // Apple Silicon Homebrew
+        search_paths.push(std::path::PathBuf::from("/usr/local/bin")); // Intel Homebrew
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        search_paths.push(std::path::PathBuf::from("/usr/local/bin"));
+        search_paths.push(std::path::PathBuf::from("/usr/bin"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = dirs::data_dir() {
+            search_paths.push(appdata.join("npm"));
+        }
+        search_paths.push(std::path::PathBuf::from("C:\\Program Files\\nodejs"));
+    }
+
+    // 添加 fnm 路径支持
+    let fnm_base = home.join(".local/state/fnm_multishells");
+    if fnm_base.exists() {
+        if let Ok(entries) = std::fs::read_dir(&fnm_base) {
+            for entry in entries.flatten() {
+                let bin_path = entry.path().join("bin");
+                if bin_path.exists() {
+                    search_paths.push(bin_path);
+                }
+            }
+        }
+    }
+
+    // 扫描 nvm 目录下的所有 node 版本
+    let nvm_base = home.join(".nvm/versions/node");
+    if nvm_base.exists() {
+        if let Ok(entries) = std::fs::read_dir(&nvm_base) {
+            for entry in entries.flatten() {
+                let bin_path = entry.path().join("bin");
+                if bin_path.exists() {
+                    search_paths.push(bin_path);
+                }
+            }
+        }
+    }
+
+    // 在每个路径中查找 node
+    for path in &search_paths {
+        let node_path = if cfg!(target_os = "windows") {
+            path.join("node.exe")
+        } else {
+            path.join("node")
+        };
+
+        if node_path.exists() {
+            // 构建 PATH 环境变量
+            let current_path = std::env::var("PATH").unwrap_or_default();
+
+            #[cfg(target_os = "windows")]
+            let new_path = format!("{};{}", path.display(), current_path);
+
+            #[cfg(not(target_os = "windows"))]
+            let new_path = format!("{}:{}", path.display(), current_path);
+
+            #[cfg(target_os = "windows")]
+            let output = {
+                Command::new("cmd")
+                    .args(["/C", &format!("\"{}\" --version", node_path.display())])
+                    .env("PATH", &new_path)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+            };
+
+            #[cfg(not(target_os = "windows"))]
+            let output = {
+                Command::new(&node_path)
                     .arg("--version")
                     .env("PATH", &new_path)
                     .output()
