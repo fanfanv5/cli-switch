@@ -558,14 +558,14 @@ pub async fn is_context_menu_registered() -> Result<bool, String> {
 }
 
 // ============================================================================
-// macOS Services 实现
+// macOS Quick Actions 实现
 // ============================================================================
 
-/// macOS Services 安装目录
+/// macOS Quick Actions 安装目录
 #[cfg(target_os = "macos")]
 const SERVICES_DIR: &str = "Library/Services";
 
-/// 获取 Services 目录路径
+/// 获取 Quick Actions 目录路径
 #[cfg(target_os = "macos")]
 fn get_services_dir() -> Result<std::path::PathBuf, String> {
     let home_dir = std::env::var("HOME")
@@ -905,7 +905,7 @@ done
     Ok(())
 }
 
-/// 注册 macOS 文件夹右键菜单（Services）
+/// 注册 macOS 文件夹右键菜单（Quick Actions）
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn register_context_menu(
@@ -914,7 +914,7 @@ pub async fn register_context_menu(
     let exe_path = std::env::current_exe()
         .map_err(|e| format!("获取 exe 路径失败: {}", e))?;
 
-    log::info!("开始注册 macOS Services，exe 路径: {}", exe_path.display());
+    log::info!("开始注册 macOS Quick Actions，exe 路径: {}", exe_path.display());
 
     let state = app
         .try_state::<AppState>()
@@ -945,15 +945,15 @@ pub async fn register_context_menu(
     // 重新加载 Services
     reload_services()?;
 
-    log::info!("macOS Services 注册成功");
+    log::info!("macOS Quick Actions 注册成功");
     Ok(())
 }
 
-/// 注销 macOS 文件夹右键菜单
+/// 注销 macOS 文件夹右键菜单（Quick Actions）
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn unregister_context_menu() -> Result<(), String> {
-    log::info!("开始注销 macOS Services");
+    log::info!("开始注销 macOS Quick Actions");
 
     let services_dir = get_services_dir()?;
 
@@ -982,11 +982,11 @@ pub async fn unregister_context_menu() -> Result<(), String> {
     // 重新加载 Services
     reload_services()?;
 
-    log::info!("macOS Services 注销成功");
+    log::info!("macOS Quick Actions 注销成功");
     Ok(())
 }
 
-/// 检查 macOS Services 是否已注册
+/// 检查 macOS Quick Actions 是否已注册
 #[cfg(target_os = "macos")]
 #[tauri::command]
 pub async fn is_context_menu_registered() -> Result<bool, String> {
@@ -1019,18 +1019,18 @@ pub async fn is_context_menu_registered() -> Result<bool, String> {
     Ok(false)
 }
 
-/// 重新加载 macOS Services（使用 killall 通知系统）
+/// 重新加载 macOS Quick Actions（刷新 Services 缓存）
 #[cfg(target_os = "macos")]
 fn reload_services() -> Result<(), String> {
-    log::info!("重新加载 macOS Services");
+    log::info!("重新加载 macOS Quick Actions");
 
-    // 使用 killall 通知系统重新加载 Services
-    let _ = std::process::Command::new("killall")
-        .args(["SystemUIServer", "-9"])
+    // 刷新 Services 缓存
+    let _ = std::process::Command::new("/System/Library/CoreServices/pbs")
+        .arg("-flush")
         .output();
 
-    // 等待系统恢复
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // 等待系统重新索引
+    std::thread::sleep(std::time::Duration::from_millis(1000));
 
     Ok(())
 }

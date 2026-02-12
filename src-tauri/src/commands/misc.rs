@@ -375,6 +375,16 @@ fn scan_cli_version(tool: &str) -> (Option<String>, Option<String>) {
         }
     }
 
+    // fnm 默认安装路径
+    search_paths.push(home.join(".fnm"));
+
+    // macOS Homebrew fnm
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from("/opt/homebrew/opt/fnm"));
+        search_paths.push(std::path::PathBuf::from("/usr/local/opt/fnm"));
+    }
+
     // 扫描 nvm 目录下的所有 node 版本
     let nvm_base = home.join(".nvm/versions/node");
     if nvm_base.exists() {
@@ -493,6 +503,16 @@ fn scan_nodejs_version() -> (Option<String>, Option<String>) {
                 }
             }
         }
+    }
+
+    // fnm 默认安装路径
+    search_paths.push(home.join(".fnm"));
+
+    // macOS Homebrew fnm
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from("/opt/homebrew/opt/fnm"));
+        search_paths.push(std::path::PathBuf::from("/usr/local/opt/fnm"));
     }
 
     // 扫描 nvm 目录下的所有 node 版本
@@ -636,6 +656,148 @@ fn get_npm_package_for_tool(tool: &str) -> Option<&'static str> {
     }
 }
 
+/// 构建常见的 node/npm 搜索路径
+fn build_node_search_paths() -> Vec<std::path::PathBuf> {
+    let home = dirs::home_dir().unwrap_or_default();
+
+    let mut search_paths: Vec<std::path::PathBuf> = vec![
+        home.join(".local/bin"),
+        home.join(".npm-global/bin"),
+        home.join("n/bin"),
+    ];
+
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+        search_paths.push(std::path::PathBuf::from("/usr/local/bin"));
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        search_paths.push(std::path::PathBuf::from("/usr/local/bin"));
+        search_paths.push(std::path::PathBuf::from("/usr/bin"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(appdata) = dirs::data_dir() {
+            search_paths.push(appdata.join("npm"));
+        }
+        search_paths.push(std::path::PathBuf::from("C:\\Program Files\\nodejs"));
+    }
+
+    // 添加 fnm 路径支持
+    let fnm_base = home.join(".local/state/fnm_multishells");
+    if fnm_base.exists() {
+        if let Ok(entries) = std::fs::read_dir(&fnm_base) {
+            for entry in entries.flatten() {
+                let bin_path = entry.path().join("bin");
+                if bin_path.exists() {
+                    search_paths.push(bin_path);
+                }
+            }
+        }
+    }
+
+    // fnm 默认安装路径
+    search_paths.push(home.join(".fnm"));
+
+    // macOS Homebrew fnm
+    #[cfg(target_os = "macos")]
+    {
+        search_paths.push(std::path::PathBuf::from("/opt/homebrew/opt/fnm"));
+        search_paths.push(std::path::PathBuf::from("/usr/local/opt/fnm"));
+    }
+
+    // 扫描 nvm 目录
+    let nvm_base = home.join(".nvm/versions/node");
+    if nvm_base.exists() {
+        if let Ok(entries) = std::fs::read_dir(&nvm_base) {
+            for entry in entries.flatten() {
+                let bin_path = entry.path().join("bin");
+                if bin_path.exists() {
+                    search_paths.push(bin_path);
+                }
+            }
+        }
+    }
+
+    search_paths
+}
+
+/// 查找 npm 路径和构建完整的 PATH（包含 node）
+/// 返回 (npm路径, 包含所有必要目录的PATH字符串)
+fn find_npm_with_node_path() -> Option<(std::path::PathBuf, String)> {
+    let search_paths = build_node_search_paths();
+
+    let mut npm_path: Option<std::path::PathBuf> = None;
+    let mut node_dir: Option<std::path::PathBuf> = None;
+    let mut npm_dir: Option<std::path::PathBuf> = None;
+
+    // 查找 npm 和 node
+    for path in &search_paths {
+        if npm_path.is_none() {
+            let npm = if cfg!(target_os = "windows") {
+                path.join("npm.cmd")
+            } else {
+                path.join("npm")
+            };
+            if npm.exists() {
+                npm_path = Some(npm);
+                npm_dir = Some(path.clone());
+            }
+        }
+
+        if node_dir.is_none() {
+            let node = if cfg!(target_os = "windows") {
+                path.join("node.exe")
+            } else {
+                path.join("node")
+            };
+            if node.exists() {
+                node_dir = Some(path.clone());
+            }
+        }
+
+        if npm_path.is_some() && node_dir.is_some() {
+            break;
+        }
+    }
+
+    let npm = npm_path?;
+
+    // 构建 PATH，包含 node 和 npm 的目录
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let mut path_dirs: Vec<String> = Vec::new();
+
+    // 添加 node 目录（优先）
+    if let Some(dir) = node_dir {
+        path_dirs.push(dir.display().to_string());
+    }
+
+    // 添加 npm 目录
+    if let Some(dir) = npm_dir {
+        if !path_dirs.contains(&dir.display().to_string()) {
+            path_dirs.push(dir.display().to_string());
+        }
+    }
+
+    // 添加原有 PATH（过滤空字符串，避免开头/连续分隔符）
+    for p in current_path.split(if cfg!(target_os = "windows") { ';' } else { ':' }) {
+        if !p.is_empty() && !path_dirs.contains(&p.to_string()) {
+            path_dirs.push(p.to_string());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    let new_path = path_dirs.join(";");
+
+    #[cfg(not(target_os = "windows"))]
+    let new_path = path_dirs.join(":");
+
+    Some((npm, new_path))
+}
+
 /// 安装或升级 CLI 工具
 #[tauri::command]
 pub async fn install_cli_tool(
@@ -661,6 +823,26 @@ pub async fn install_cli_tool(
         get_npm_package_for_tool(&tool).ok_or_else(|| format!("工具 {tool} 不支持 npm 安装"))?;
     log::info!("[CLI安装] npm包名: {}", package);
 
+    // 查找 npm 路径和构建包含 node 的 PATH
+    let (npm_path, new_path) = match find_npm_with_node_path() {
+        Some(paths) => {
+            log::info!("[CLI安装] 找到 npm 路径: {:?}", paths.0);
+            log::info!("[CLI安装] 构建的 PATH: {}", paths.1);
+            paths
+        }
+        None => {
+            log::error!("[CLI安装] 未找到 npm 命令");
+            return Ok(CliToolInstallResult {
+                success: false,
+                tool: tool.clone(),
+                action: action.clone(),
+                message: "未找到 npm 命令，请确保已安装 Node.js".to_string(),
+                output: String::new(),
+                error: Some("npm not found".to_string()),
+            });
+        }
+    };
+
     // 跨平台执行命令
     let output = {
         #[cfg(target_os = "windows")]
@@ -671,22 +853,25 @@ pub async fn install_cli_tool(
             } else {
                 vec![package.to_string()]
             };
-            log::info!("[CLI安装] 执行命令: npm.cmd install -g --force {}", args[0]);
-            std::process::Command::new("npm.cmd")
+            log::info!("[CLI安装] 执行命令: {} install -g --force {}", npm_path.display(), args[0]);
+            std::process::Command::new(&npm_path)
                 .arg("install")
                 .arg("-g")
                 .arg("--force")
                 .args(&args)
+                .env("PATH", &new_path)
                 .creation_flags(CREATE_NO_WINDOW)
                 .output()
         }
 
         #[cfg(not(target_os = "windows"))]
         {
+            // 转义路径中的单引号：' -> '\''
+            let npm_path_escaped = npm_path.display().to_string().replace('\'', "'\\''");
             let npm_cmd = if matches!(action, CliToolAction::Upgrade) {
-                format!(r#"npm install -g --force {}@latest"#, package)
+                format!(r#"'{}' install -g --force {}@latest"#, npm_path_escaped, package)
             } else {
-                format!(r#"npm install -g --force {}"#, package)
+                format!(r#"'{}' install -g --force {}"#, npm_path_escaped, package)
             };
             log::info!("[CLI安装] 执行命令: {}", npm_cmd);
 
@@ -695,6 +880,7 @@ pub async fn install_cli_tool(
             let output_with_sudo = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&sudo_npm_cmd)
+                .env("PATH", &new_path)
                 .output()
                 .map_err(|_| ());
 
@@ -712,6 +898,7 @@ pub async fn install_cli_tool(
                 let output_no_sudo = std::process::Command::new("sh")
                     .arg("-c")
                     .arg(&npm_cmd)
+                    .env("PATH", &new_path)
                     .output()
                     .map_err(|_| ());
 
@@ -721,19 +908,28 @@ pub async fn install_cli_tool(
                         Ok(out)
                     }
                     _ => {
-                        // 权限不足，使用 macOS 授权，并延长 sudo 时间戳
+                        // 权限不足，使用 macOS 授权
                         log::info!("[CLI安装] 权限不足，使用系统授权");
 
-                        // 先执行 sudo -v 延长授权时间（5分钟），然后再执行实际命令
-                        let full_cmd = format!(r#"cd /tmp && sudo -v && {}"#, npm_cmd);
+                        // 转义 PATH 中的单引号
+                        let escaped_path = new_path.replace('\'', "'\\''");
+                        // 在命令中显式设置 PATH，因为 AppleScript 的 do shell script 不继承环境变量
+                        let full_cmd = format!(
+                            r#"export PATH='{}' && cd /tmp && {}"#,
+                            escaped_path, npm_cmd
+                        );
 
-                        // 转义引号和反斜杠以便在 AppleScript 中使用
-                        let escaped_cmd = full_cmd.replace('"', r#"\""#).replace('\\', r#"\\"#);
+                        // AppleScript 转义：反斜杠和双引号
+                        let escaped_cmd = full_cmd
+                            .replace('\\', "\\\\")
+                            .replace('"', "\\\"");
 
                         let apple_script = format!(
                             r#"do shell script "{}" with administrator privileges"#,
                             escaped_cmd
                         );
+
+                        log::info!("[CLI安装] AppleScript: {}", apple_script);
 
                         std::process::Command::new("osascript")
                             .arg("-e")
@@ -769,8 +965,15 @@ pub async fn install_cli_tool(
     }
 
     if output.status.success() {
-        // 验证安装结果
-        let (version, _) = try_get_version(&tool);
+        // 验证安装结果 - 先尝试直接执行，失败则扫描常见路径
+        let (version, _) = {
+            let direct = try_get_version(&tool);
+            if direct.0.is_some() {
+                direct
+            } else {
+                scan_cli_version(&tool)
+            }
+        };
         let version_msg = version
             .as_ref()
             .map(|v| format!("当前版本: {v}"))
